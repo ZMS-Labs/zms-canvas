@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { assertNoSystemCodexPolicy, buildCodexArgs, callCodexCli, prepareIsolatedRuntime, sanitizeCodexEnv, windowsProgramDataKnownFolder } = require("../codex-cli.js");
+const { buildCodexArgs, callCodexCli, prepareIsolatedRuntime, sanitizeCodexEnv } = require("../codex-cli.js");
 
 const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
@@ -67,25 +67,6 @@ test("creates an isolated Codex home and copies only Codex authentication", asyn
   } finally {
     await fs.promises.rm(directory, { recursive: true, force: true });
   }
-});
-
-test("rejects system Codex configuration that cannot be ignored", async () => {
-  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "penecho-codex-system-test-"));
-  const systemDir = process.platform === "win32" ? path.join(directory, "OpenAI", "Codex") : "/etc/codex";
-  if (process.platform !== "win32") return;
-  await fs.promises.mkdir(systemDir, { recursive: true });
-  await fs.promises.writeFile(path.join(systemDir, "config.toml"), "mcp_servers = {}\n");
-  try {
-    assert.throws(() => assertNoSystemCodexPolicy({}, directory), /cannot be safely ignored/);
-  } finally {
-    await fs.promises.rm(directory, { recursive: true, force: true });
-  }
-});
-
-test("resolves Windows ProgramData independently of an overridden environment value", { skip: process.platform !== "win32" }, () => {
-  const directory = windowsProgramDataKnownFolder({ SYSTEMROOT: process.env.SYSTEMROOT, PROGRAMDATA: "C:\\penecho-spoof" });
-  assert.equal(path.isAbsolute(directory), true);
-  assert.notEqual(directory.toLowerCase(), "c:\\penecho-spoof");
 });
 
 test("executes a configured Codex-compatible CLI with stdin and an attached image", async () => {

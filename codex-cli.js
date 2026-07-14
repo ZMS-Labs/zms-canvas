@@ -3,7 +3,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFileSync, spawn } = require("child_process");
+const { spawn } = require("child_process");
 
 const MAX_CAPTURE_BYTES = 1024 * 1024;
 const MAX_AUTH_BYTES = 1024 * 1024;
@@ -107,33 +107,7 @@ function sourceCodexHome(env = process.env) {
   return home ? path.join(path.resolve(home), ".codex") : null;
 }
 
-function windowsProgramDataKnownFolder(env = process.env) {
-  const systemRoot = env.SYSTEMROOT || process.env.SYSTEMROOT || "C:\\Windows",
-    powershell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  let output;
-  try {
-    output = execFileSync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
-  } catch (error) {
-    throw new Error(`Unable to resolve the Windows ProgramData known folder: ${error.message}`);
-  }
-  const directory = output.trim();
-  if (!path.isAbsolute(directory)) throw new Error("Unable to resolve the Windows ProgramData known folder.");
-  return directory;
-}
-
-function systemCodexPolicyPaths(env = process.env, programData = null) {
-  const root = process.platform === "win32" ? path.join(programData || windowsProgramDataKnownFolder(env), "OpenAI", "Codex") : "/etc/codex";
-  return ["config.toml", "requirements.toml", "managed_config.toml", "skills"].map((name) => path.join(root, name));
-}
-
-function assertNoSystemCodexPolicy(env = process.env, programData = null) {
-  if (process.platform === "darwin") throw new Error("Codex CLI mode cannot isolate macOS managed preferences. Run PenEcho in a dedicated OS account, VM, or container.");
-  const found = systemCodexPolicyPaths(env, programData).filter((candidate) => fs.existsSync(candidate));
-  if (found.length) throw new Error(`Codex CLI system configuration or skills are present and cannot be safely ignored: ${found.join(", ")}`);
-}
-
 async function prepareIsolatedRuntime(workDir, env = process.env) {
-  assertNoSystemCodexPolicy(env);
   const homeDir = path.join(workDir, "home"), codexHome = path.join(homeDir, ".codex"),
     appData = path.join(homeDir, "AppData", "Roaming"), localAppData = path.join(homeDir, "AppData", "Local"),
     xdgConfigHome = path.join(homeDir, ".config"), xdgCacheHome = path.join(homeDir, ".cache");
@@ -275,4 +249,4 @@ async function callCodexCli({ executable, model, prompt, atlasImage, signal, env
   }
 }
 
-module.exports = { assertNoSystemCodexPolicy, buildCodexArgs, callCodexCli, decodeAtlasImage, prepareIsolatedRuntime, resolveCodexLaunch, sanitizeCodexEnv, sourceCodexHome, systemCodexPolicyPaths, windowsProgramDataKnownFolder };
+module.exports = { buildCodexArgs, callCodexCli, decodeAtlasImage, prepareIsolatedRuntime, resolveCodexLaunch, sanitizeCodexEnv, sourceCodexHome };
