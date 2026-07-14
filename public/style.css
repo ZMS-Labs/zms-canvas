@@ -117,6 +117,9 @@ button, .toolbar label, select, input { font: inherit; }
 .toolbar button.active { color: #241a14; border-color: #ddc47e; background: linear-gradient(180deg, #dec47f, #a98242); box-shadow: 0 0 16px rgba(214, 175, 91, .16), inset 0 1px rgba(255,255,255,.4); }
 .toolbar button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
 .toolbar .icon-button { width: 30px; padding: 5px; }
+.toolbar button.utility-icon:not(.active) { color: var(--ink); }
+.toolbar button.utility-icon:hover:not(.active) { color: var(--gold-bright); }
+.toolbar button.utility-icon.danger:not(.active), .toolbar button.utility-icon.danger:hover:not(.active) { color: var(--danger); }
 #newCanvasBtn { flex: 0 0 auto; margin-left: auto; }
 #historyBtn { flex: 0 0 auto; }
 .fullscreen-exit { display: none; }

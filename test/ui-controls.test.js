@@ -18,6 +18,21 @@ test("New canvas controls are available in the toolbar and History panel", () =>
   assert.match(app, /function startBlankCanvas\(\)/);
 });
 
+test("New, Clear, and Debug are accessible theme-aware icon buttons", () => {
+  const html = read("public/index.html"), css = read("public/style.css");
+  for (const id of ["newCanvasBtn", "clearCanvasBtn", "debugBtn"]) {
+    const button = html.match(new RegExp(`<button[^>]*id="${id}"[\\s\\S]*?<\\/button>`))?.[0] || "";
+    assert.match(button, /class="[^"]*icon-button[^"]*utility-icon[^"]*"/);
+    assert.match(button, /data-i18n-aria=/);
+    assert.match(button, /data-i18n-title=/);
+    assert.match(button, /<svg /);
+    assert.doesNotMatch(button, />\s*(New|Clear|Debug)\s*</);
+  }
+  for (const theme of ["arcane", "scifi", "research"]) assert.match(html, new RegExp(`value="${theme}"`));
+  assert.match(css, /button\.utility-icon:not\(\.active\).*var\(--ink\)/);
+  assert.match(css, /button\.utility-icon\.danger:not\(\.active\).*var\(--danger\)/);
+});
+
 test("Auto AI exposes a persisted zero-to-ten-second delay control", () => {
   const html = read("public/index.html"), app = read("public/app.js"), css = read("public/style.css");
   assert.match(html, /id="autoDelayRange"[^>]*min="0"[^>]*max="10"[^>]*step="0\.1"/);

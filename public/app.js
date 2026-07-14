@@ -3286,6 +3286,7 @@
     const panel = document.querySelector("#debugPanel");
     panel.hidden = !panel.hidden;
     e.currentTarget.setAttribute("aria-expanded", String(!panel.hidden));
+    e.currentTarget.classList.toggle("active", !panel.hidden);
   };
   document.querySelectorAll("[data-action]").forEach(
     (b) =>
