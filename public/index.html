@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#100d18">
+  <title>PenEcho | Handwritten AI Canvas</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="mathjax-config.js"></script>
+  <script
+    defer
+    src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js"
+    integrity="sha384-KKWa9jJ1MZvssLeOoXG6FiOAZfAgmzsIIfw8BXwI9+kYm0lPCbC6yTQPBC00F1/L"
+    crossorigin="anonymous"></script>
+</head>
+<body data-theme="arcane">
+  <main>
+    <section class="topbar">
+      <header class="top-row">
+        <div class="brand">
+          <div class="sigil" aria-hidden="true">
+            <img src="penecho-mark.png" alt="">
+          </div>
+          <div class="brand-copy">
+            <h1><span>Pen</span><strong>Echo</strong></h1>
+            <p data-i18n="tagline">Write across twenty thousand squares and summon knowledge</p>
+          </div>
+        </div>
+        <div class="status-wrap">
+          <div id="status" role="status" aria-live="polite">Ready</div>
+          <div id="batchActions" class="batch-actions" hidden>
+            <button id="rejectBatch" type="button" data-i18n-aria="rejectBatch" aria-label="Discard all AI drafts" data-i18n-title="rejectBatch" title="Discard all AI drafts">×</button>
+            <button id="acceptBatch" type="button" data-i18n-aria="acceptBatch" aria-label="Accept all AI drafts" data-i18n-title="acceptBatch" title="Accept all AI drafts">√</button>
+          </div>
+        </div>
+        <div class="language-toggle" role="group" data-i18n-aria="language" aria-label="Language">
+          <button type="button" data-language="en" aria-pressed="true">EN</button>
+          <button type="button" data-language="zh" aria-pressed="false">中</button>
+        </div>
+          <label class="theme-control"><span data-i18n="theme">Theme</span>
+            <select id="theme" data-i18n-aria="theme" aria-label="Theme">
+              <option value="arcane" data-i18n="themeArcane">Arcane</option>
+              <option value="scifi" data-i18n="themeScifi">Sci-fi</option>
+              <option value="research" data-i18n="themeResearch">Research</option>
+          </select>
+        </label>
+      </header>
+
+      <nav class="toolbar" data-i18n-aria="boardTools" aria-label="Board tools">
+        <div class="tool-group primary-tools">
+          <button data-mode="pen" class="active" data-i18n-aria="pen" aria-label="Pen" data-i18n-title="pen" title="Pen">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z"/><path d="m14.5 7.5 3 3"/></svg>
+            <span data-i18n="pen">Pen</span>
+          </button>
+          <button data-mode="eraser" data-i18n-aria="eraser" aria-label="Eraser" data-i18n-title="eraser" title="Eraser">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 20-4-4L14 5a2 2 0 0 1 3 0l2 2a2 2 0 0 1 0 3L9 20H7Z"/><path d="m11 8 6 6M7 20h12"/></svg>
+            <span data-i18n="eraser">Eraser</span>
+          </button>
+          <label class="range-control"><span data-i18n="penSize">Pen size</span>
+            <input id="penSize" type="range" min="2" max="16" value="4" data-i18n-aria="penSize" aria-label="Pen size">
+            <output id="penSizeValue">4 px</output>
+          </label>
+          <div id="autoControl" class="auto-control">
+            <button id="auto" class="active" type="button" aria-pressed="true" aria-expanded="false" aria-controls="autoDelayPopover" data-i18n-aria="autoAI" aria-label="Auto AI" data-i18n-title="autoAI" title="Auto AI"><span id="autoLabel">Auto AI (1.2s)</span></button>
+            <div id="autoDelayPopover" class="auto-delay-popover" hidden>
+              <label for="autoDelayRange"><span data-i18n="autoDelay">Auto AI delay</span><output id="autoDelayValue" for="autoDelayRange">1.2 s</output></label>
+              <input id="autoDelayRange" type="range" min="0" max="10" step="0.1" value="1.2" data-i18n-aria="autoDelay" aria-label="Auto AI delay">
+            </div>
+          </div>
+          <button id="gridToggle" class="active icon-button" type="button" aria-pressed="true" data-i18n-aria="grid" aria-label="Canvas grid" data-i18n-title="grid" title="Canvas grid">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4Z"/><path d="M4 10h16M10 4v16M16 4v16M4 16h16"/></svg>
+          </button>
+          <label><span data-i18n="aiFont">AI font</span>
+            <select id="aiFont" data-i18n-aria="aiFont" aria-label="AI font">
+              <option value="ui-rounded, system-ui, sans-serif" data-i18n="fontRounded">Rounded</option>
+              <option value="Segoe Print, Comic Sans MS, cursive" data-i18n="fontHand">Handwritten</option>
+              <option value="Georgia, serif" data-i18n="fontSerif">Classic serif</option>
+              <option value="system-ui, sans-serif" data-i18n="fontSans">Sans serif</option>
+            </select>
+          </label>
+          <div class="color-orb-control" data-color-control="ink">
+            <button type="button" class="color-orb-trigger color-black" data-i18n-aria="inkColor" aria-label="Ink color" data-i18n-title="inkColor" title="Ink color" aria-expanded="false"><span aria-hidden="true">P</span></button>
+            <div class="color-orbit" role="menu" data-i18n-aria="inkColor" aria-label="Ink color" aria-hidden="true">
+              <button type="button" class="orbit-swatch orbit-1 color-blue" data-ink-color="#2563eb" data-i18n-aria="colorBlue" aria-label="Blue"></button>
+              <button type="button" class="orbit-swatch orbit-2 color-black active" data-ink-color="#1f2937" data-i18n-aria="colorBlack" aria-label="Ink black"></button>
+              <button type="button" class="orbit-swatch orbit-3 color-red" data-ink-color="#dc2626" data-i18n-aria="colorRed" aria-label="Red"></button>
+              <button type="button" class="orbit-swatch orbit-4 color-orange" data-ink-color="#ea580c" data-i18n-aria="colorOrange" aria-label="Orange"></button>
+              <button type="button" class="orbit-swatch orbit-5 color-gold" data-ink-color="#ca8a04" data-i18n-aria="colorGold" aria-label="Gold"></button>
+              <button type="button" class="orbit-swatch orbit-6 color-green" data-ink-color="#16a34a" data-i18n-aria="colorGreen" aria-label="Green"></button>
+              <button type="button" class="orbit-swatch orbit-7 color-cyan" data-ink-color="#0891b2" data-i18n-aria="colorCyan" aria-label="Cyan"></button>
+              <button type="button" class="orbit-swatch orbit-8 color-purple" data-ink-color="#9333ea" data-i18n-aria="colorPurple" aria-label="Purple"></button>
+            </div>
+          </div>
+          <div class="color-orb-control" data-color-control="ai">
+            <button type="button" class="color-orb-trigger color-blue" data-i18n-aria="aiColor" aria-label="AI color" data-i18n-title="aiColor" title="AI color" aria-expanded="false"><span aria-hidden="true">AI</span></button>
+            <div class="color-orbit" role="menu" data-i18n-aria="aiColor" aria-label="AI color" aria-hidden="true">
+              <button type="button" class="orbit-swatch orbit-1 color-blue active" data-ai-color="#2563eb" data-i18n-aria="colorBlue" aria-label="Blue"></button>
+              <button type="button" class="orbit-swatch orbit-2 color-black" data-ai-color="#1f2937" data-i18n-aria="colorBlack" aria-label="Ink black"></button>
+              <button type="button" class="orbit-swatch orbit-3 color-red" data-ai-color="#dc2626" data-i18n-aria="colorRed" aria-label="Red"></button>
+              <button type="button" class="orbit-swatch orbit-4 color-orange" data-ai-color="#ea580c" data-i18n-aria="colorOrange" aria-label="Orange"></button>
+              <button type="button" class="orbit-swatch orbit-5 color-gold" data-ai-color="#ca8a04" data-i18n-aria="colorGold" aria-label="Gold"></button>
+              <button type="button" class="orbit-swatch orbit-6 color-green" data-ai-color="#16a34a" data-i18n-aria="colorGreen" aria-label="Green"></button>
+              <button type="button" class="orbit-swatch orbit-7 color-cyan" data-ai-color="#0891b2" data-i18n-aria="colorCyan" aria-label="Cyan"></button>
+              <button type="button" class="orbit-swatch orbit-8 color-purple" data-ai-color="#9333ea" data-i18n-aria="colorPurple" aria-label="Purple"></button>
+            </div>
+          </div>
+          <button data-action="undo" class="icon-button" data-i18n-aria="undo" aria-label="Undo" data-i18n-title="undo" title="Undo">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7-5 5 5 5"/><path d="M4 12h9a6 6 0 0 1 6 6"/></svg>
+          </button>
+          <button data-action="redo" class="icon-button" data-i18n-aria="redo" aria-label="Redo" data-i18n-title="redo" title="Redo">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a6 6 0 0 0-6 6"/></svg>
+          </button>
+          <button id="fullscreenBtn" class="icon-button" type="button" data-i18n-aria="fullscreen" aria-label="Fullscreen" data-i18n-title="fullscreen" title="Fullscreen" aria-pressed="false">
+            <svg class="fullscreen-enter" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
+            <svg class="fullscreen-exit" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8H3V3M16 8h5V3M8 16H3v5M16 16h5v5"/></svg>
+          </button>
+          <button data-action="clear" class="danger" data-i18n="clear" data-i18n-aria="clear" aria-label="Clear" data-i18n-title="clear" title="Clear">Clear</button>
+          <button id="debugBtn" data-i18n="debug" data-i18n-aria="debug" aria-label="Debug" aria-expanded="false">Debug</button>
+          <button id="newCanvasBtn" type="button" data-i18n="newCanvas" data-i18n-aria="newCanvas" aria-label="New canvas" data-i18n-title="newCanvas" title="New canvas">New</button>
+          <button id="historyBtn" class="icon-button" type="button" data-i18n-aria="history" aria-label="Local history" data-i18n-title="history" title="Local history" aria-expanded="false" aria-controls="historyPanel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4Z"/><path d="M8 5V3h8v2M8 10h8M8 14h6"/></svg>
+          </button>
+        </div>
+      </nav>
+    </section>
+
+    <div id="historyBackdrop" class="history-backdrop" hidden></div>
+    <aside id="historyPanel" class="history-panel" aria-hidden="true" aria-labelledby="historyTitle">
+      <header>
+        <div><span class="history-kicker">PenEcho</span><h2 id="historyTitle" data-i18n="historyTitle">Local canvas history</h2></div>
+        <button id="historyClose" type="button" data-i18n-aria="closeHistory" aria-label="Close history" data-i18n-title="closeHistory" title="Close history">×</button>
+      </header>
+      <p data-i18n="historyDescription">Stores confirmed canvas content only. Unconfirmed AI drafts are excluded.</p>
+      <div class="history-save-row">
+        <input id="historyName" type="text" maxlength="48" data-i18n-placeholder="snapshotName" placeholder="Snapshot name (optional)" data-i18n-aria="snapshotName" aria-label="Snapshot name">
+        <button id="historySave" type="button" data-i18n="saveSnapshot">Save canvas</button>
+        <button id="historyNew" type="button" data-i18n="newCanvas">New</button>
+      </div>
+      <div id="historyList" class="history-list" aria-live="polite"></div>
+    </aside>
+
+    <dialog id="newCanvasDialog" class="new-canvas-dialog" aria-labelledby="newCanvasTitle">
+      <form method="dialog">
+        <header>
+          <div><span class="history-kicker">PenEcho</span><h2 id="newCanvasTitle" data-i18n="newCanvasTitle">Start a new canvas?</h2></div>
+          <button id="newCanvasClose" class="new-canvas-close" type="button" data-i18n-aria="cancel" aria-label="Cancel" data-i18n-title="cancel" title="Cancel">×</button>
+        </header>
+        <p data-i18n="newCanvasDescription">Save confirmed content before starting over. Unconfirmed AI drafts are not included.</p>
+        <p id="currentSnapshotLabel" class="current-snapshot"></p>
+        <label class="new-snapshot-name" for="newSnapshotName"><span data-i18n="newSnapshotName">Name for new snapshot (optional)</span>
+          <input id="newSnapshotName" type="text" maxlength="48" data-i18n-placeholder="snapshotName" placeholder="Snapshot name (optional)">
+        </label>
+        <div class="new-canvas-actions">
+          <button id="newCanvasCancel" type="button" data-i18n="cancel">Cancel</button>
+          <button id="newDiscard" class="new-canvas-discard" type="button" data-i18n="newWithoutSave">Don't save</button>
+          <button id="newSaveCopy" class="new-canvas-primary" type="button" data-i18n="saveAsNewAndCreate">Save as new</button>
+          <button id="newOverwrite" type="button" data-i18n="overwriteAndCreate">Overwrite current</button>
+        </div>
+      </form>
+    </dialog>
+
+    <section class="canvas-frame">
+      <div class="frame-corner corner-left" aria-hidden="true"></div>
+      <div class="frame-corner corner-right" aria-hidden="true"></div>
+      <section id="viewport" data-i18n-aria="canvas" aria-label="Zoomable handwritten AI canvas">
+        <canvas id="screen"></canvas>
+        <div id="aiEmbodiment" class="ai-embodiment" data-theme="arcane" role="group" data-i18n-aria="aiGuide" aria-label="AI knowledge guide" aria-busy="false">
+          <div class="orb-aura" aria-hidden="true"></div>
+          <div class="orb-runes" aria-hidden="true"></div>
+          <span class="orb-particle particle-one" aria-hidden="true"></span>
+          <span class="orb-particle particle-two" aria-hidden="true"></span>
+          <span class="orb-particle particle-three" aria-hidden="true"></span>
+          <button id="aiOrb" class="ai-orb" type="button" data-i18n-aria="openAIMenu" aria-label="Open AI action menu" aria-haspopup="menu" aria-expanded="false">
+            <span class="arcane-crystal" aria-hidden="true"></span>
+            <span class="reactor-core" aria-hidden="true"></span>
+            <svg class="einstein-portrait" viewBox="0 0 80 80" aria-hidden="true"><path class="einstein-hair" d="M18 39C7 33 13 21 22 23 16 13 29 10 34 16 39 7 52 11 54 18 64 12 72 22 65 30 77 35 69 48 61 46L57 34H23Z"/><path class="einstein-face" d="M22 31c0-11 35-12 36 0v15c0 11-7 20-18 20S22 57 22 46Z"/><path class="einstein-eye" d="M28 42h8m8 0h8"/><path class="einstein-moustache" d="M27 51c5-4 10-2 13 2 3-4 8-6 13-2-4 8-10 9-13 5-4 4-10 3-13-5Z"/><path class="einstein-coat" d="M18 76c3-11 11-15 22-15s19 4 22 15Z"/></svg>
+          </button>
+          <div id="aiRadial" class="ai-radial" role="menu" data-i18n-aria="aiActions" aria-label="AI actions" aria-hidden="true">
+            <button type="button" role="menuitem" class="radial-action radial-answer" data-ai-action="answer" data-i18n="answer" data-i18n-aria="answer" aria-label="Answer">Answer</button>
+            <button type="button" role="menuitem" class="radial-action radial-hint" data-ai-action="hint" data-i18n="hint" data-i18n-aria="hint" aria-label="Hint">Hint</button>
+            <button type="button" role="menuitem" class="radial-action radial-continue" data-ai-action="continue" data-i18n="continue" data-i18n-aria="continue" aria-label="Continue">Continue</button>
+            <button type="button" role="menuitem" class="radial-action radial-explain" data-ai-action="explain" data-i18n="explain" data-i18n-aria="explain" aria-label="Explain">Explain</button>
+            <button type="button" role="menuitem" class="radial-action radial-plot" data-ai-action="plot" data-i18n="plot" data-i18n-aria="plot" aria-label="Plot">Plot</button>
+          </div>
+        </div>
+        <div id="tip" data-i18n="tip">Stylus writes · finger pans · pinch zooms · wheel zooms · middle or Alt drag pans</div>
+      </section>
+    </section>
+
+    <section id="debugPanel" hidden>
+      <div><strong data-i18n="debugTitle">PenEcho debug</strong><span id="debugRequest">request: -</span></div>
+      <ol id="debugEvents"></ol>
+    </section>
+
+    <footer>
+      <span id="coords">x 10000 · y 10000 · 100%</span>
+      <span data-i18n="footerTip">AI drafts: move the whole group or adjust, accept, and discard items independently</span>
+    </footer>
+  </main>
+  <script src="/api/config.js"></script>
+  <script src="locales/zh.js"></script>
+  <script src="draw.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

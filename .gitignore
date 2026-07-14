@@ -1,0 +1,14 @@
+.env
+.env.cli
+.env.api
+node_modules/
+npm-debug.log*
+logs/
+.opencode/
+test-results/
+playwright-report/
+coverage/
+.DS_Store
+Thumbs.db
+local/*
+docs/assets/penecho-demo.gif
