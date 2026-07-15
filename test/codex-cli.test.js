@@ -35,9 +35,8 @@ test("builds a non-interactive read-only Codex invocation", () => {
 });
 
 test("passes only the required environment to the Codex process", () => {
-  const env = sanitizeCodexEnv({ PATH: "bin", OPENAI_API_KEY: "secret", OPENAI_PRO_API_KEY: "fallback", OPENAI_API_URL: "https://example.test", OPENAI_MODEL: "remote", HTTPS_PROXY: "http://user:secret@proxy.test", LOCAL_MODEL_URL: "https://remote-model.test", UNRELATED_SECRET: "private", CODEX_HOME: "host-codex", HOME: "host-home", USERPROFILE: "host-profile" });
+  const env = sanitizeCodexEnv({ PATH: "bin", OPENAI_API_KEY: "secret", OPENAI_API_URL: "https://example.test", OPENAI_MODEL: "remote", HTTPS_PROXY: "http://user:secret@proxy.test", LOCAL_MODEL_URL: "https://remote-model.test", UNRELATED_SECRET: "private", CODEX_HOME: "host-codex", HOME: "host-home", USERPROFILE: "host-profile" });
   assert.equal(env.OPENAI_API_KEY, undefined);
-  assert.equal(env.OPENAI_PRO_API_KEY, undefined);
   assert.equal(env.OPENAI_API_URL, undefined);
   assert.equal(env.OPENAI_MODEL, undefined);
   assert.equal(env.UNRELATED_SECRET, undefined);

@@ -56,6 +56,10 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 20-4-4L14 5a2 2 0 0 1 3 0l2 2a2 2 0 0 1 0 3L9 20H7Z"/><path d="m11 8 6 6M7 20h12"/></svg>
             <span data-i18n="eraser">Eraser</span>
           </button>
+          <button data-mode="select" data-i18n-aria="select" aria-label="Lasso select" data-i18n-title="select" title="Lasso select">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.5 5.5c3.2 3.1-.8 7.5-5.1 8.8-4.9 1.5-11.2-.1-10.2-4.5.8-3.8 6.6-5.7 11.2-4.6 4.1 1 6.4 5 4.4 8.5-1.4 2.5-4.8 3.8-7.8 4.1"/><path d="m8 16 3 1.8-2.3 2.6"/></svg>
+            <span data-i18n="select">Lasso</span>
+          </button>
           <label class="range-control"><span data-i18n="penSize">Pen size</span>
             <input id="penSize" type="range" min="2" max="16" value="4" data-i18n-aria="penSize" aria-label="Pen size">
             <output id="penSizeValue">4 px</output>
@@ -206,6 +210,7 @@
   <script src="/api/config.js"></script>
   <script src="locales/zh.js"></script>
   <script src="draw.js"></script>
+  <script src="selection.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -8,6 +8,8 @@ const os = require("os");
 const net = require("net");
 const { URL } = require("url");
 const { callCodexCli } = require("./codex-cli.js");
+let sharp = null;
+try { sharp = require("sharp"); } catch {}
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, "public");
@@ -15,21 +17,28 @@ loadEnv(path.join(ROOT, ".env"));
 const AI_PROVIDER = normalizeAiProvider(process.env.AI_PROVIDER);
 const API_BASE_URL = process.env.OPENAI_API_URL;
 const API_FORMAT = process.env.OPENAI_API_FORMAT?.toLowerCase();
+const API_KEY = process.env.OPENAI_API_KEY;
 const MAX_BODY = 9 * 1024 * 1024;
 const LOG_DIR = process.env.PENECHO_STATE_DIR ? path.resolve(process.env.PENECHO_STATE_DIR, "logs") : path.join(ROOT, "logs");
 const LOG_FILE = path.join(LOG_DIR, "penecho.log");
+const REQUEST_TRACE_DIR = path.join(LOG_DIR, "requests");
 const MAX_LOG = 2 * 1024 * 1024;
 const CANVAS_SIZE = 20000;
 const debugRate = new Map();
 const MODEL = process.env.OPENAI_MODEL;
 const API = resolveApiConfig(API_BASE_URL, API_FORMAT);
-const HEALTH_INTERVAL = 10 * 60 * 1000;
-const HEALTH_TIMEOUT = 6000;
+const AI_IMAGE_FORMAT = normalizeAiImageFormat(process.env.PENECHO_AI_IMAGE_FORMAT);
 const autoDelayValue = process.env.AUTO_AI_DELAY_SECONDS?.trim();
 const configuredAutoDelay = autoDelayValue ? Number(autoDelayValue) : NaN;
 const AUTO_AI_DELAY_MS = Number.isFinite(configuredAutoDelay) && configuredAutoDelay >= 0 && configuredAutoDelay <= 60 ? Math.round(configuredAutoDelay * 1000) : 1200;
 const debugArtifactsValue = optionalBoolean(process.env.PENECHO_DEBUG_ARTIFACTS);
 const DEBUG_ARTIFACTS = debugArtifactsValue === true;
+const requestTraceValue = optionalBoolean(process.env.PENECHO_REQUEST_TRACE),
+  REQUEST_TRACE_ENABLED = requestTraceValue === true,
+  requestTraceLimitText = process.env.PENECHO_REQUEST_TRACE_LIMIT?.trim(),
+  requestTraceLimitValue = requestTraceLimitText ? Number(requestTraceLimitText) : 100,
+  requestTraceLimitValid = Number.isInteger(requestTraceLimitValue) && requestTraceLimitValue >= 1 && requestTraceLimitValue <= 1000,
+  REQUEST_TRACE_LIMIT = requestTraceLimitValid ? requestTraceLimitValue : 100;
 const codexTimeoutText = process.env.CODEX_CLI_TIMEOUT_SECONDS?.trim(),
   codexTimeoutValue = codexTimeoutText ? Number(codexTimeoutText) : 90,
   codexTimeoutValid = Number.isFinite(codexTimeoutValue) && codexTimeoutValue >= 10 && codexTimeoutValue <= 300,
@@ -45,7 +54,7 @@ const CODEX_CLI = {
 const AI_REQUEST_TIMEOUT_MS = AI_PROVIDER === "codex-cli" ? CODEX_CLI.timeoutMs * 2 + 20000 : 190000;
 const AI_SESSION_COOKIE_PREFIX = "penecho_ai_session";
 const AI_SESSION_TOKEN = crypto.randomBytes(32).toString("base64url");
-let activeApi = null, healthCheckPromise = null, activeCodexRequests = 0;
+let activeCodexRequests = 0;
 const activeCodexClientRequests = new Map(), pendingCodexClientRequests = new Set(), recentlyCancelledCodexRequests = new Map(), consumedCodexReplacements = new Map();
 
 function loadEnv(file) {
@@ -63,6 +72,12 @@ function normalizeAiProvider(value) {
   return null;
 }
 
+function normalizeAiImageFormat(value) {
+  const format=String(value||"webp").trim().toLowerCase();
+  if(format==="jpg")return"jpeg";
+  return["webp","png","jpeg"].includes(format)?format:null;
+}
+
 function optionalBoolean(value) {
   if (value === undefined || String(value).trim() === "") return false;
   const normalized = String(value).trim().toLowerCase();
@@ -74,8 +89,11 @@ function optionalBoolean(value) {
 function providerConfigurationError() {
   if (!AI_PROVIDER) return "AI_PROVIDER must be api or codex-cli.";
   if (AI_PROVIDER === "api" && (!API || !MODEL)) return "Server must configure a valid OPENAI_API_URL base URL and OPENAI_MODEL. OPENAI_API_FORMAT, when set, must be openai or anthropic.";
-  if (AI_PROVIDER === "api" && !process.env.OPENAI_API_KEY && !process.env.OPENAI_PRO_API_KEY) return "Server is missing API credentials.";
+  if (AI_PROVIDER === "api" && !API_KEY) return "Server is missing OPENAI_API_KEY.";
+  if (AI_PROVIDER === "api" && !AI_IMAGE_FORMAT) return "PENECHO_AI_IMAGE_FORMAT must be webp, png, or jpeg when set.";
   if (debugArtifactsValue === null) return "PENECHO_DEBUG_ARTIFACTS must be true or false when set.";
+  if (requestTraceValue === null) return "PENECHO_REQUEST_TRACE must be true or false when set.";
+  if (!requestTraceLimitValid) return "PENECHO_REQUEST_TRACE_LIMIT must be an integer between 1 and 1000.";
   if (AI_PROVIDER === "codex-cli" && !codexTimeoutValid) return "CODEX_CLI_TIMEOUT_SECONDS must be between 10 and 300.";
   if (AI_PROVIDER === "codex-cli" && !codexConcurrencyValid) return "CODEX_CLI_MAX_CONCURRENCY must be an integer between 1 and 8.";
   return null;
@@ -112,10 +130,11 @@ function resolveApiConfig(value, formatOverride) {
 
 function providerRequest(key, model, text, atlasImage = null) {
   if (API.format === "anthropic") {
+    const image = atlasImage ? imageDataUrlParts(atlasImage) : null;
     const content = atlasImage
       ? [
           { type: "text", text },
-          { type: "image", source: { type: "base64", media_type: "image/png", data: atlasImage.slice(atlasImage.indexOf(",") + 1) } },
+          { type: "image", source: { type: "base64", media_type: image.mimeType, data: image.base64 } },
         ]
       : text;
     return {
@@ -202,49 +221,6 @@ function sanitizedDebugDetails(event, details) {
   if (event === "ai-deferred") return { requestId, reason:DEBUG_REASONS.has(details.reason)?details.reason:undefined };
   return {};
 }
-async function testApiKey(key, label, externalSignal = null) {
-  if (!key) return false;
-  const started=Date.now(),controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),HEALTH_TIMEOUT);
-  const abortFromClient=()=>controller.abort();
-  if(externalSignal?.aborted)controller.abort();
-  else externalSignal?.addEventListener("abort",abortFromClient,{once:true});
-  try {
-    const request = providerRequest(key, MODEL, "hi"),
-      response=await fetch(API.endpoint,{signal:controller.signal,method:"POST",redirect:"error",...request});
-    log({type:"api-health",label,format:API.format,model:MODEL,ok:response.ok,status:response.status,elapsedMs:Date.now()-started});
-    return response.ok;
-  } catch(error) {
-    if(externalSignal?.aborted)throw error;
-    log({type:"api-health",label,model:MODEL,ok:false,elapsedMs:Date.now()-started,error:error?.name==="AbortError"?"timeout":"request-failed"});
-    return false;
-  } finally {
-    clearTimeout(timeout);
-    externalSignal?.removeEventListener("abort",abortFromClient);
-  }
-}
-function refreshApiConfig(skipLabel = null, externalSignal = null) {
-  if (!API || !MODEL) {
-    activeApi = null;
-    return Promise.resolve(null);
-  }
-  if (!externalSignal && healthCheckPromise) return healthCheckPromise;
-  const check=(async()=>{
-    const candidates=[{label:"primary",key:process.env.OPENAI_API_KEY},{label:"pro",key:process.env.OPENAI_PRO_API_KEY}].filter(candidate=>candidate.label!==skipLabel);
-    let selected=null;
-    for(const candidate of candidates){
-      if(externalSignal?.aborted)throw Object.assign(Error("Request aborted"),{name:"AbortError"});
-      if(await testApiKey(candidate.key,candidate.label,externalSignal)){selected={...candidate,model:MODEL};break}
-    }
-    if(externalSignal?.aborted)throw Object.assign(Error("Request aborted"),{name:"AbortError"});
-    activeApi=selected;
-    log({type:"api-selection",label:selected?.label||null,model:MODEL,available:Boolean(selected)});
-    return selected;
-  })();
-  if(externalSignal)return check;
-  healthCheckPromise=check.finally(()=>{healthCheckPromise=null});
-  return healthCheckPromise;
-}
-async function ensureApiConfig(signal){if(!API||!MODEL)throw Error("OPENAI_API_URL must be a valid base URL, OPENAI_API_FORMAT must be openai or anthropic when set, and OPENAI_MODEL must be configured.");return activeApi||await refreshApiConfig(null,signal)}
 function validPayload(p) {
   const validImage = value => typeof value === "string" && value.length <= 8 * 1024 * 1024 && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
   const image = validImage(p?.atlasImage);
@@ -271,10 +247,42 @@ function canonicalPayload(p) {
     persona:THEME_PERSONAS[p.uiTheme],
   };
 }
+function imageDataUrlParts(dataUrl) {
+  const match=/^data:(image\/(?:png|webp|jpeg));base64,([A-Za-z0-9+/]+={0,2})$/i.exec(String(dataUrl||""));
+  if(!match)return null;
+  const mimeType=match[1].toLowerCase(),base64=match[2],buffer=Buffer.from(base64,"base64"),extension=mimeType==="image/webp"?"webp":mimeType==="image/jpeg"?"jpg":"png";
+  return{mimeType,base64,buffer,bytes:buffer.length,extension,file:`atlas.${extension}`};
+}
 function encodedImageSize(dataUrl){
-  const buffer=Buffer.from(dataUrl.slice(dataUrl.indexOf(",")+1),"base64");
-  if(dataUrl.startsWith("data:image/png")&&buffer.length>=24&&buffer.toString("ascii",1,4)==="PNG")return{w:buffer.readUInt32BE(16),h:buffer.readUInt32BE(20)};
+  const image=imageDataUrlParts(dataUrl),buffer=image?.buffer;
+  if(image?.mimeType==="image/png"&&buffer.length>=24&&buffer.toString("ascii",1,4)==="PNG")return{w:buffer.readUInt32BE(16),h:buffer.readUInt32BE(20)};
   return null;
+}
+async function prepareOutboundAtlas(atlasImage) {
+  const source=imageDataUrlParts(atlasImage);
+  if(!source)throw new Error("Invalid atlas image data URL.");
+  const configuredFormat=AI_IMAGE_FORMAT||"invalid",result={sourceImage:atlasImage,source,preferredImage:atlasImage,preferred:source,encoding:{requested:AI_PROVIDER==="api"&&configuredFormat!=="png",configuredFormat,format:configuredFormat==="webp"?"webp-lossless":configuredFormat==="jpeg"?"jpeg-q95-444":"png-original",status:AI_PROVIDER==="api"?configuredFormat==="png"?"source":"unavailable":"not-needed",lossless:configuredFormat!=="jpeg"},fallbackUsed:false,fallback:null};
+  if(AI_PROVIDER!=="api")return result;
+  if(configuredFormat==="png")return result;
+  if(!sharp){result.encoding.reason="encoder-unavailable";return result}
+  try {
+    const pipeline=sharp(source.buffer,{failOn:"error",limitInputPixels:2048*1536,sequentialRead:true}),buffer=configuredFormat==="webp"?await pipeline.webp({lossless:true,effort:6}).toBuffer():await pipeline.flatten({background:"#fff"}).jpeg({quality:95,chromaSubsampling:"4:4:4",optimiseCoding:true}).toBuffer(),mimeType=configuredFormat==="webp"?"image/webp":"image/jpeg",base64=buffer.toString("base64"),preferredImage=`data:${mimeType};base64,${base64}`,preferred=imageDataUrlParts(preferredImage);
+    if(!preferred)throw new Error("Image encoder returned invalid output.");
+    result.preferredImage=preferredImage;
+    result.preferred=preferred;
+    result.encoding={...result.encoding,status:"encoded"};
+    return result;
+  } catch {
+    result.encoding.reason="encode-failed";
+    return result;
+  }
+}
+function isImageFormatRejection(error) {
+  const status=error?.status;
+  if(status===415)return true;
+  if(![400,422].includes(status))return false;
+  const detail=`${error?.message||""}\n${error?.upstream?.body||""}`.toLowerCase(),mentionsImage=/(?:webp|jpe?g|png|image|mime|media(?:[_ -]?type)?|content[_ -]?type|format)/.test(detail),rejects=/(?:unsupported|not supported|invalid|unknown|unrecognized|not allowed|only (?:accept|support)|cannot (?:decode|read|process)|failed to (?:decode|read|process)|bad image)/.test(detail);
+  return mentionsImage&&rejects;
 }
 function overlaps(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y}
 function latestInputMetadata(changedBox,sourceRect,imageScale,imageSize){
@@ -424,48 +432,201 @@ function saveLatestAtlas(dataUrl, metadata) {
     } catch { log({type:"debug-atlas-error",error:"write-failed"}); }
   });
 }
+function upstreamResponseTrace(response, raw) {
+  const headers = {};
+  for (const name of ["x-request-id", "request-id", "x-trace-id", "x-correlation-id", "cf-ray"]) {
+    const value = response.headers.get(name);
+    if (value) headers[name] = short(value, 256);
+  }
+  const responseId = typeof raw?.id === "string" ? short(raw.id, 256) : null,
+    reportedModel = typeof raw?.model === "string" ? short(raw.model, 256) : null,
+    finishReason = API.format === "anthropic" ? raw?.stop_reason : raw?.choices?.[0]?.finish_reason;
+  return { responseId, reportedModel, finishReason:typeof finishReason === "string" ? short(finishReason, 128) : null, headers };
+}
+function saveLatestModelExchange(requestId, attempt, modelInput, retryInstruction, model) {
+  if (!DEBUG_ARTIFACTS) return;
+  let serialized;
+  try {
+    serialized = JSON.stringify({
+      time:new Date().toISOString(),
+      requestId,
+      attempt,
+      request:{ metadata:modelInput, retryInstruction:retryInstruction || null },
+      response:{ provider:model.provider, model:model.model, status:model.status, upstream:model.upstream || null, rawContent:model.content, parsed:model.result },
+    }, null, 2);
+  } catch {
+    log({type:"debug-model-error",error:"serialize-failed"});
+    return;
+  }
+  setImmediate(() => {
+    try {
+      fs.mkdirSync(LOG_DIR, { recursive:true });
+      fs.writeFile(path.join(LOG_DIR,"latest-model.json"),serialized,error=>{if(error)log({type:"debug-model-error",error:"write-failed"})});
+    } catch { log({type:"debug-model-error",error:"write-failed"}); }
+  });
+}
+function modelRequestText(modelInput, retryInstruction="") {
+  return retryInstruction ? `${JSON.stringify(modelInput)}\n\n${retryInstruction}` : JSON.stringify(modelInput);
+}
+function codexModelPrompt(text) {
+  return `${ACTIVE_SYSTEM_PROMPT}\n\nOperate only as an image-analysis model for PenEcho. Do not inspect files, run commands, or modify the temporary workspace. Analyze the attached canvas image and return only the requested JSON object as your final response.\n\nRequest metadata:\n${text}`;
+}
+function traceSafeValue(value, atlasImage, atlasBase64, atlasFile) {
+  if (value === atlasImage || value === atlasBase64) return `<saved as ${atlasFile}>`;
+  if (Array.isArray(value)) return value.map(item=>traceSafeValue(item,atlasImage,atlasBase64,atlasFile));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,traceSafeValue(item,atlasImage,atlasBase64,atlasFile)]));
+  return value;
+}
+function tracedOutboundRequest(modelInput, atlasImage, retryInstruction="") {
+  const text=modelRequestText(modelInput,retryInstruction);
+  if (AI_PROVIDER === "codex-cli") return {
+    provider:"codex-cli",
+    executable:CODEX_CLI.executable,
+    model:CODEX_CLI.model||"configured-default",
+    prompt:codexModelPrompt(text),
+    image:"atlas.png",
+    imageMimeType:"image/png",
+    imageBytes:imageDataUrlParts(atlasImage)?.bytes||null,
+  };
+  const image=imageDataUrlParts(atlasImage),request=providerRequest("<redacted>",MODEL,text,atlasImage),
+    headers=Object.fromEntries(Object.entries(request.headers).map(([name,value])=>[name,/authorization|api-key/i.test(name)?"<redacted>":value])),
+    atlasBase64=image.base64,
+    body=traceSafeValue(JSON.parse(request.body),atlasImage,atlasBase64,image.file);
+  return {provider:"api",format:API.format,endpoint:API.endpoint,method:"POST",headers,body,image:image.file,imageMimeType:image.mimeType,imageBytes:image.bytes,imageEncoding:image.mimeType==="image/webp"?"lossless-webp":image.mimeType==="image/jpeg"?"jpeg-q95-444":"original-png"};
+}
+function requestTraceChild(name) {
+  const root=path.resolve(REQUEST_TRACE_DIR),target=path.resolve(root,name);
+  return path.dirname(target)===root ? target : null;
+}
+function pruneRequestTraces() {
+  if (!REQUEST_TRACE_ENABLED || !requestTraceLimitValid) return;
+  try {
+    fs.mkdirSync(REQUEST_TRACE_DIR,{recursive:true});
+    const entries=fs.readdirSync(REQUEST_TRACE_DIR,{withFileTypes:true})
+      .filter(entry=>entry.isDirectory()&&/^\d{13}-[0-9a-f-]{36}$/i.test(entry.name))
+      .sort((a,b)=>a.name.localeCompare(b.name));
+    for(const entry of entries.slice(0,Math.max(0,entries.length-REQUEST_TRACE_LIMIT))){
+      const target=requestTraceChild(entry.name);
+      if(target)fs.rmSync(target,{recursive:true,force:true});
+    }
+  } catch { log({type:"request-trace-error",error:"prune-failed"}); }
+}
+function writeRequestTrace(trace) {
+  if(!trace)return;
+  trace.data.updatedAt=new Date().toISOString();
+  fs.writeFileSync(path.join(trace.directory,"trace.json"),JSON.stringify(trace.data,null,2));
+}
+function updateRequestTrace(trace, mutate) {
+  if(!trace)return;
+  try { mutate(trace.data);writeRequestTrace(trace); }
+  catch { log({type:"request-trace-error",requestId:trace.data?.requestId,error:"write-failed"}); }
+}
+function beginRequestTrace(requestId, ip, payload, modelInput, imageTransport) {
+  if(!REQUEST_TRACE_ENABLED)return null;
+  try {
+    const startedAt=new Date().toISOString(),name=`${String(Date.now()).padStart(13,"0")}-${requestId}`,directory=requestTraceChild(name);
+    if(!directory)throw new Error("Invalid trace path");
+    fs.mkdirSync(directory,{recursive:true});
+    fs.writeFileSync(path.join(directory,imageTransport.source.file),imageTransport.source.buffer);
+    if(imageTransport.preferred.file!==imageTransport.source.file)fs.writeFileSync(path.join(directory,imageTransport.preferred.file),imageTransport.preferred.buffer);
+    const trace={directory,data:{
+      version:2,
+      requestId,
+      startedAt,
+      updatedAt:startedAt,
+      status:"in-flight",
+      client:{ip,trigger:payload.trigger,userAction:payload.userAction,uiTheme:payload.uiTheme},
+      image:{file:imageTransport.source.file,mimeType:imageTransport.source.mimeType,bytes:imageTransport.source.bytes,preferredFile:imageTransport.preferred.file,preferredMimeType:imageTransport.preferred.mimeType,preferredBytes:imageTransport.preferred.bytes,encoding:imageTransport.encoding,fallback:null,atlasSize:payload.atlasSize,sourceRect:payload.sourceRect,imageScale:payload.imageScale,latestInput:modelInput.latestInput,focusInset:modelInput.focusInset,hotspots:payload.hotspotGrid.hotspots.length},
+      modelInput,
+      attempts:[],
+      final:null,
+      error:null,
+    }};
+    writeRequestTrace(trace);
+    pruneRequestTraces();
+    return trace;
+  } catch { log({type:"request-trace-error",requestId,error:"start-failed"});return null; }
+}
+function traceAttemptStarted(trace, attempt, modelInput, atlasImage, retryInstruction, transportReason) {
+  updateRequestTrace(trace,data=>data.attempts.push({attempt,startedAt:new Date().toISOString(),completedAt:null,retryInstruction:retryInstruction||null,transportReason:transportReason||null,outbound:tracedOutboundRequest(modelInput,atlasImage,retryInstruction),response:null,error:null}));
+}
+function traceAttemptResponse(trace, attempt, model) {
+  updateRequestTrace(trace,data=>{
+    const record=data.attempts.find(item=>item.attempt===attempt);
+    if(!record)return;
+    record.completedAt=new Date().toISOString();
+    record.response={provider:model.provider,model:model.model,status:model.status,upstream:model.upstream||null,rawContent:model.content,parsed:model.result};
+  });
+}
+function traceErrorDetails(error) {
+  return {name:String(error?.name||"Error"),message:String(error?.message||"Unknown error").slice(0,65536),status:Number.isInteger(error?.status)?error.status:null,upstream:error?.upstream||null};
+}
+function traceAttemptError(trace, attempt, error) {
+  updateRequestTrace(trace,data=>{
+    const record=data.attempts.find(item=>item.attempt===attempt);
+    if(!record)return;
+    record.completedAt=new Date().toISOString();
+    record.error=traceErrorDetails(error);
+  });
+}
+async function callModelWithTrace(trace, attempt, modelInput, atlasImage, retryInstruction, signal, transportReason=null) {
+  traceAttemptStarted(trace,attempt,modelInput,atlasImage,retryInstruction,transportReason);
+  try {
+    const model=await callModel(modelInput,atlasImage,retryInstruction,signal);
+    traceAttemptResponse(trace,attempt,model);
+    return model;
+  } catch(error) {
+    traceAttemptError(trace,attempt,error);
+    throw error;
+  }
+}
+function traceImageFallback(trace, error, fromMimeType) {
+  const format=fromMimeType==="image/jpeg"?"jpeg":"webp";
+  updateRequestTrace(trace,data=>{data.image.fallback={used:true,reason:`upstream-${format}-format-rejected`,from:fromMimeType,to:"image/png",upstreamStatus:Number.isInteger(error?.status)?error.status:null,at:new Date().toISOString()}});
+}
+function completeRequestTrace(trace, status, httpStatus, body=null, error=null) {
+  updateRequestTrace(trace,data=>{
+    data.status=status;
+    data.completedAt=new Date().toISOString();
+    data.final={httpStatus,body};
+    data.error=error?traceErrorDetails(error):null;
+  });
+}
 async function callModel(modelInput, atlasImage, retryInstruction="", externalSignal = null) {
   const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), AI_PROVIDER === "codex-cli" ? CODEX_CLI.timeoutMs : 90000);
   const abortFromClient = () => controller.abort();
   if (externalSignal?.aborted) controller.abort();
   else externalSignal?.addEventListener("abort", abortFromClient, { once: true });
   try {
-    const text = retryInstruction ? `${JSON.stringify(modelInput)}\n\n${retryInstruction}` : JSON.stringify(modelInput);
+    const text = modelRequestText(modelInput,retryInstruction);
     if (AI_PROVIDER === "codex-cli") {
-      const prompt = `${ACTIVE_SYSTEM_PROMPT}\n\nOperate only as an image-analysis model for PenEcho. Do not inspect files, run commands, or modify the temporary workspace. Analyze the attached canvas image and return only the requested JSON object as your final response.\n\nRequest metadata:\n${text}`;
+      const prompt = codexModelPrompt(text);
       try {
         const content=await callCodexCli({ ...CODEX_CLI, prompt, atlasImage, signal:controller.signal });
-        return {content,result:parsedModelResponse(content),status:200,provider:"codex-cli",model:CODEX_CLI.model||"configured-default",label:"codex-cli"};
+        try { return {content,result:parsedModelResponse(content),status:200,provider:"codex-cli",model:CODEX_CLI.model||"configured-default",upstream:null}; }
+        catch(error){error.upstream={status:200,rawContent:content};throw error}
       } catch (error) {
         if (DEBUG_ARTIFACTS && error.diagnostic) log({type:"codex-cli-error",error:"process-failed",diagnosticBytes:Buffer.byteLength(error.diagnostic)});
         if (error.cleanupDiagnostic) log({type:"codex-cli-cleanup-error",error:"cleanup-failed"});
         throw error;
       }
     }
-    let api=await ensureApiConfig(controller.signal);if(!api)throw Error("No healthy API key is currently available.");
-    for(let attempt=0;attempt<2;attempt++){
-      let response;
-      try {
-        response=await fetch(API.endpoint,{signal:controller.signal,method:"POST",redirect:"error",...providerRequest(api.key,api.model,text,atlasImage)});
-      } catch(error) {
-        if(attempt||error?.name==="AbortError")throw error;
-        log({type:"api-runtime-failure",label:api.label,model:api.model,error:"request-failed"});
-        activeApi=null;api=await refreshApiConfig(api.label,controller.signal);if(!api)throw error;continue;
-      }
-      if(!response.ok){
-        const errorText=short(await response.text(),400),retryable=[401,403,408,429].includes(response.status)||response.status>=500;
-        if(!attempt&&retryable){
-          log({type:"api-runtime-failure",label:api.label,model:api.model,status:response.status});
-          activeApi=null;const fallback=await refreshApiConfig(api.label,controller.signal);if(fallback){api=fallback;continue}
-        }
-        const error = new Error(`Model request failed (${response.status}): ${errorText}`);
-        error.status = response.status;
-        throw error;
-      }
-      const raw=await response.json(),content=providerResponseText(raw),result=parsedModelResponse(content);
-      return {content,result,status:response.status,provider:"api",model:api.model,label:api.label};
+    const response=await fetch(API.endpoint,{signal:controller.signal,method:"POST",redirect:"error",...providerRequest(API_KEY,MODEL,text,atlasImage)});
+    if(!response.ok){
+      const responseText=await response.text(),errorText=short(responseText,400),error=new Error(`Model request failed (${response.status}): ${errorText}`);
+      error.status=response.status;
+      error.upstream={status:response.status,body:responseText.slice(0,65536),headers:upstreamResponseTrace(response,null).headers};
+      throw error;
     }
-    throw Error("No healthy API key is currently available.");
+    const responseText=await response.text();
+    let raw;
+    try { raw=JSON.parse(responseText); }
+    catch(error){error.upstream={status:response.status,body:responseText.slice(0,65536),headers:upstreamResponseTrace(response,null).headers};throw error}
+    const content=providerResponseText(raw);
+    let result;
+    try { result=parsedModelResponse(content); }
+    catch(error){error.upstream={...upstreamResponseTrace(response,raw),rawContent:content};throw error}
+    return {content,result,status:response.status,provider:"api",model:MODEL,upstream:upstreamResponseTrace(response,raw)};
   } finally {
     clearTimeout(timeout);
     externalSignal?.removeEventListener("abort", abortFromClient);
@@ -532,6 +693,12 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type":"image/png", "Cache-Control":"no-store" });
     return fs.createReadStream(file).pipe(res);
   }
+  if (req.method === "GET" && url.pathname === "/api/debug/model") {
+    if (!DEBUG_ARTIFACTS || !isLoopback(req.socket.remoteAddress) || !isLoopbackHostname(requestHost(req)?.hostname)) return send(res, 404, "Not found", "text/plain; charset=utf-8");
+    const file = path.join(LOG_DIR, "latest-model.json");
+    if (!fs.existsSync(file)) return send(res, 404, "No debug model exchange yet.\n", "text/plain; charset=utf-8");
+    return send(res, 200, fs.readFileSync(file,"utf8"), "application/json; charset=utf-8");
+  }
   if (req.method === "POST" && url.pathname === "/api/debug/client") {
     if (!DEBUG_ARTIFACTS) return send(res, 204, "");
     if (!isLoopback(req.socket.remoteAddress) || !isLoopbackHostname(requestHost(req)?.hostname)) return send(res, 404, "Not found", "text/plain; charset=utf-8");
@@ -550,7 +717,7 @@ const server = http.createServer(async (req, res) => {
     const requestId = crypto.randomUUID(), started = Date.now(), ip = req.socket.remoteAddress,
       clientController = new AbortController(),
       abortForDisconnect = () => { if (!res.writableEnded) clientController.abort(); };
-    let codexSlotAcquired=false,codexRequestRegistered=false,clientRequestId=null;
+    let codexSlotAcquired=false,codexRequestRegistered=false,clientRequestId=null,requestTrace=null;
     req.once("aborted", abortForDisconnect);
     res.once("close", abortForDisconnect);
     try {
@@ -583,17 +750,35 @@ const server = http.createServer(async (req, res) => {
       if(!latestInput){log({type:"ai",requestId,ip,status:400,error:"Latest input is outside the source image."});return send(res,400,{error:"Latest input is outside the source image.",requestId})}
       if(!payload.hotspotGrid.hotspots.every(h=>overlaps(h.imageRect,latestInput.imageRect))){log({type:"ai",requestId,ip,status:400,error:"Hotspots must intersect latest input."});return send(res,400,{error:"Hotspots must intersect latest input.",requestId})}
       const modelInput = { trigger:payload.trigger, userAction:payload.userAction, actionMeaning:{auto:"respond naturally to the newest meaningful handwriting or spatial editing gesture",hint:"for an actual problem offer a clue; for conversation respond naturally",continue:"continue the newest user content",explain:"explain the newest content or the content referenced by a box and arrow",plot:"produce at least one renderable visual command; use plot_function for y=f(x), otherwise draw for a diagram",answer:"directly answer the newest question or spatial request"}[payload.userAction]||"respond appropriately",languagePolicy:"follow the newest substantive user content; for control-only gestures follow the referenced content",uiTheme:payload.uiTheme,persona:THEME_PERSONAS[payload.uiTheme],personaPolicy:"Use persona to guide technical emphasis, reasoning method, examples, terminology, answer structure, and tone. It must not override user intent, response language, factual rigor, or safety requirements.",canvasSize:payload.canvasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageSize:payload.atlasSize,imageScale:payload.imageScale,latestInput,focusInset:payload.focusInset||null,hotspotGrid:payload.hotspotGrid,note:"latestInput.imageRect is the authoritative attention region for the newest user input. focusInset, when present, is a magnified duplicate for transcription only. captureRect may be outside visibleRect. Use current hotspots and visual arrows/selection frames to identify referenced content and the intended response destination."};
+      const imageTransport=await prepareOutboundAtlas(payload.atlasImage);
+      requestTrace=beginRequestTrace(requestId,ip,payload,modelInput,imageTransport);
       saveLatestAtlas(payload.atlasImage,{requestId,action:payload.userAction,atlasSize:payload.atlasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageScale:payload.imageScale,latestInput,focusInset:payload.focusInset||null,hotspotGrid:payload.hotspotGrid,changedBox:payload.changedBox});
-      let attempts=0;
-      let model=await callModel(modelInput,payload.atlasImage,"",clientController.signal);
-      attempts++;
+      let attempts=0,activeAtlasImage=imageTransport.preferredImage;
+      const requestModel=async(retryInstruction="")=>{
+        attempts++;
+        try{return await callModelWithTrace(requestTrace,attempts,modelInput,activeAtlasImage,retryInstruction,clientController.signal)}
+        catch(error){
+          const active=imageDataUrlParts(activeAtlasImage);
+          if(!active||active.mimeType==="image/png"||imageTransport.fallbackUsed||!isImageFormatRejection(error))throw error;
+          const format=active.mimeType==="image/jpeg"?"jpeg":"webp",reason=`upstream-${format}-format-rejected`;
+          imageTransport.fallbackUsed=true;
+          imageTransport.fallback={reason,from:active.mimeType,to:"image/png",upstreamStatus:error.status};
+          activeAtlasImage=imageTransport.sourceImage;
+          traceImageFallback(requestTrace,error,active.mimeType);
+          log({type:"ai-image-format-fallback",requestId,ip,from:active.mimeType,to:"image/png",upstreamStatus:error.status});
+          attempts++;
+          return callModelWithTrace(requestTrace,attempts,modelInput,activeAtlasImage,retryInstruction,clientController.signal,`png-fallback-after-${format}-rejection`);
+        }
+      };
+      let model=await requestModel();
+      saveLatestModelExchange(requestId,attempts,modelInput,"",model);
       const invalidTextLayout=hasInvalidTextLayout(model.result),manualEmpty=payload.userAction!=="auto"&&model.result.commands.length===0,plotMissing=payload.userAction==="plot"&&!hasVisualCommand(model.result);
       if(invalidTextLayout||manualEmpty||plotMissing){
         const reason=invalidTextLayout?"invalid-text-layout":manualEmpty?"empty-commands":"plot-without-visual";
         log({type:"ai-retry",requestId,ip,action:payload.userAction,reason});
         const retry=plotMissing?"Perform a second independent inspection using focusInset for transcription if available. The user explicitly selected plot. Return at least one renderable visual command. For a single-variable function, return plot_function with an ASCII expression using explicit multiplication such as 3*x. For other requested visuals, return one unified draw command. Do not answer with prose or draw_formula alone.":"Perform a second independent inspection. Use focusInset as the primary transcription view when present, especially for Chinese handwriting, then cross-check latestInput.imageRect. Inspect any box/circle-selected content and arrow chain it visually references outside that rectangle. Follow the final arrowhead as the intended destination. Every write_text command must include finite global x and y for its top-left start plus a finite maxWidth chosen from the available blank space.";
-        model=await callModel(modelInput,payload.atlasImage,retry,clientController.signal);
-        attempts++;
+        model=await requestModel(retry);
+        saveLatestModelExchange(requestId,attempts,modelInput,retry,model);
       }
       const result=model.result;
       result.commands=normalizeCommands(result);
@@ -603,11 +788,15 @@ const server = http.createServer(async (req, res) => {
       }
       result.commands=normalizeCommandPlacements(result.commands,payload);
       const loggedIntent=DEBUG_INTENTS.has(result.intent)?result.intent:"invalid",loggedTools=result.commands.map(c=>c?.tool).filter(tool=>DEBUG_TOOLS.has(tool));
-      log({ type:"ai", requestId, ip, action:payload.userAction, uiTheme:payload.uiTheme, provider:model.provider,model:model.model,providerLabel:model.label,atlasSize:payload.atlasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageScale:payload.imageScale,latestInput,hotspots:payload.hotspotGrid.hotspots.length,changedBox:payload.changedBox,upstreamStatus:model.status,status:200,elapsedMs:Date.now()-started,attempts,intent:loggedIntent,commandCount:result.commands.length,tools:loggedTools });
-      send(res, 200, { ...result, requestId, attempts });
+      const sentImage=imageDataUrlParts(activeAtlasImage);
+      log({ type:"ai", requestId, ip, action:payload.userAction, uiTheme:payload.uiTheme, provider:model.provider,model:model.model,atlasSize:payload.atlasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageScale:payload.imageScale,latestInput,hotspots:payload.hotspotGrid.hotspots.length,changedBox:payload.changedBox,imageTransport:{configuredFormat:imageTransport.encoding.configuredFormat,sourceMimeType:imageTransport.source.mimeType,sourceBytes:imageTransport.source.bytes,preferredMimeType:imageTransport.preferred.mimeType,preferredBytes:imageTransport.preferred.bytes,sentMimeType:sentImage?.mimeType||null,sentBytes:sentImage?.bytes||null,encodingStatus:imageTransport.encoding.status,fallbackUsed:imageTransport.fallbackUsed},upstreamStatus:model.status,status:200,elapsedMs:Date.now()-started,attempts,intent:loggedIntent,commandCount:result.commands.length,tools:loggedTools });
+      const responseBody={...result,requestId,attempts};
+      completeRequestTrace(requestTrace,"completed",200,responseBody);
+      send(res, 200, responseBody);
     } catch (error) {
       if (clientController.signal.aborted) {
         log({ type:"ai", requestId, ip, status:499, elapsedMs:Date.now()-started, error:"Client cancelled request." });
+        completeRequestTrace(requestTrace,"cancelled",499,null,error);
         if(!res.writableEnded&&!res.destroyed)send(res,409,{error:"Request was superseded or cancelled.",requestId});
         return;
       }
@@ -617,7 +806,9 @@ const server = http.createServer(async (req, res) => {
         code = clientError ? 400 : timedOut ? 504 : upstreamStatus || 502;
       log({ type:"ai", requestId, ip, status:code, elapsedMs:Date.now()-started, error:clientError?"client-error":timedOut?"timeout":upstreamStatus?"upstream-error":"model-error" });
       const message = error.message || "Unable to process request.", userMessage = AI_PROVIDER === "codex-cli" && !clientError ? `${message} Run \`penecho doctor --codex\` for diagnostics.` : message;
-      send(res, code, { error:userMessage, requestId });
+      const responseBody={error:userMessage,requestId};
+      completeRequestTrace(requestTrace,timedOut?"timeout":"failed",code,responseBody,error);
+      send(res, code, responseBody);
     } finally {
       if(codexSlotAcquired)activeCodexRequests--;
       if(codexRequestRegistered&&clientRequestId){activeCodexClientRequests.delete(clientRequestId);pendingCodexClientRequests.delete(clientRequestId);if(clientController.signal.aborted)recentlyCancelledCodexRequests.set(clientRequestId,Date.now()+2000)}
@@ -640,6 +831,7 @@ const server = http.createServer(async (req, res) => {
 const configuredPort = Number(process.env.PORT), PORT = Number.isInteger(configuredPort) && configuredPort >= 0 && configuredPort <= 65535 ? configuredPort : 3888;
 const HOST = process.env.HOST || "0.0.0.0";
 const startupConfigurationError = AI_PROVIDER === "codex-cli" ? providerConfigurationError() : null;
+if (REQUEST_TRACE_ENABLED && requestTraceLimitValid) pruneRequestTraces();
 if (startupConfigurationError) {
   console.error(`PenEcho configuration error: ${startupConfigurationError}`);
   log({ type:"server-start-error", provider:AI_PROVIDER, error:startupConfigurationError });
@@ -647,9 +839,5 @@ if (startupConfigurationError) {
 } else server.listen(PORT, HOST, () => {
   const address = server.address(), listeningPort = typeof address === "object" && address ? address.port : PORT;
   console.log(`PenEcho: http://${HOST}:${listeningPort} (${AI_PROVIDER || "invalid provider"})`);
-  log({ type:"server-start", host:HOST, port:listeningPort, provider:AI_PROVIDER });
+  log({ type:"server-start", host:HOST, port:listeningPort, provider:AI_PROVIDER,requestTrace:REQUEST_TRACE_ENABLED?REQUEST_TRACE_LIMIT:0,aiImageFormat:AI_PROVIDER==="api"?AI_IMAGE_FORMAT:null,imageEncoder:AI_PROVIDER==="api"&&AI_IMAGE_FORMAT!=="png"&&Boolean(sharp) });
 });
-if (!startupConfigurationError && AI_PROVIDER === "api") {
-  refreshApiConfig();
-  setInterval(refreshApiConfig,HEALTH_INTERVAL).unref();
-}

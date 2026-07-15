@@ -1,11 +1,11 @@
 {
   "name": "penecho",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Think with AI on a shared canvas for handwriting, equations, and diagrams",
   "license": "AGPL-3.0-only",
   "keywords": ["canvas", "handwriting", "ai", "whiteboard", "math"],
   "bin": {
-    "penecho": "./cli.js"
+    "penecho": "cli.js"
   },
   "files": [
     "cli.js",
@@ -33,8 +33,11 @@
   },
   "scripts": {
     "start": "node server.js",
-    "check": "node --check cli.js && node --check server.js && node --check codex-cli.js && node --check public/draw.js && node --check public/app.js && node --test",
+    "check": "node --check cli.js && node --check server.js && node --check codex-cli.js && node --check public/draw.js && node --check public/selection.js && node --check public/app.js && node --test",
     "test": "node --test"
   },
-  "engines": { "node": ">=18" }
+  "engines": { "node": ">=18.17.0" },
+  "dependencies": {
+    "sharp": "^0.34.5"
+  }
 }

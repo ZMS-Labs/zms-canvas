@@ -7,6 +7,17 @@ const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
+const functionSource = (source, name) => {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `missing function ${name}`);
+  const body = source.indexOf("{", start);
+  let depth = 0;
+  for (let index = body; index < source.length; index++) {
+    if (source[index] === "{") depth++;
+    else if (source[index] === "}" && --depth === 0) return source.slice(start, index + 1);
+  }
+  assert.fail(`unterminated function ${name}`);
+};
 
 test("New canvas controls are available in the toolbar and History panel", () => {
   const html = read("public/index.html"), app = read("public/app.js");
@@ -50,4 +61,55 @@ test("New canvas and Auto AI controls have English and Chinese copy", () => {
     assert.match(app, new RegExp(`${key}:`));
     assert.match(zh, new RegExp(`${key}:`));
   }
+});
+
+test("eraser strokes never enter the AI recognition batch", () => {
+  const app = read("public/app.js");
+  assert.match(app, /const shouldRequest = !d\.erase/);
+  assert.match(app, /if \(shouldRequest\) \{\s*for \(const point of d\.trail\) state\.hotspotTrail\.push\(point\)/);
+  assert.match(app, /if \(shouldRequest && state\.autoEligible\) schedule\(\)/);
+  assert.match(app, /const erasing = state\.mode === "eraser";\s*if \(erasing\) invalidateRecognition\(\)/);
+  assert.match(app, /erase: erasing/);
+  assert.match(app, /dot\(p, erasing, size, !erasing\)/);
+  assert.match(app, /stroke\(a, p, d\.erase, size, !d\.erase\)/);
+});
+
+test("an uncapturable batch is discarded before later pen strokes", () => {
+  const app = read("public/app.js");
+  assert.match(app, /function discardUncapturableInput\(hotspotCount, usedDirty\)/);
+  assert.match(app, /if \(hotspotCount\) state\.hotspotTrail\.splice\(0, hotspotCount\);\s*state\.dirty = null;\s*state\.autoEligible = false/);
+  assert.match(app, /if \(!packed\) \{\s*discardUncapturableInput\(hotspotCount, Boolean\(dirtySnapshot\)\)/);
+});
+
+test("the retained focus inset implementation is inactive", () => {
+  const app = read("public/app.js");
+  assert.match(app, /FOCUS_INSET_ENABLED = false/);
+  assert.match(app, /FOCUS_INSET_ENABLED \? drawFocusInset\(out, latestBox, sourceRect, imageScale\) : null/);
+  assert.match(app, /function drawFocusInset\(out, latestBox, sourceRect, mainScale\)/);
+});
+
+test("lasso tool exposes local transform controls in both languages", () => {
+  const html = read("public/index.html"), app = read("public/app.js"), zh = read("public/locales/zh.js");
+  assert.match(html, /data-mode="select"/);
+  assert.ok(html.indexOf('src="selection.js"') < html.indexOf('src="app.js"'));
+  for (const key of ["select", "selectionTooSmall", "selectionReady", "selectionCommitted", "selectionCancelled", "selectionRecolored"]) {
+    assert.match(app, new RegExp(`${key}:`));
+    assert.match(zh, new RegExp(`${key}:`));
+  }
+  assert.match(app, /drawDraftActions\(ctx, selection\.box, size\)/);
+  assert.match(app, /drawMoveHandle\(ctx, selection\.box, size, true\)/);
+  assert.match(app, /drawResizeHandle\(ctx, selection\.box, size\)/);
+  assert.match(app, /clippedContext\.clip\("evenodd"\)/);
+  assert.match(app, /tileContext\.fill\("evenodd"\)/);
+  assert.match(app, /MAX_LASSO_POINTS = 4096/);
+});
+
+test("selection edits never schedule or send AI requests", () => {
+  const app = read("public/app.js");
+  for (const name of ["captureSelection", "commitSelection", "cancelSelection", "applySelectionColor", "updateSelectionGesture"]) {
+    const source = functionSource(app, name);
+    assert.doesNotMatch(source, /\b(?:schedule|requestAI)\s*\(/, `${name} must stay local`);
+  }
+  assert.match(functionSource(app, "finishDrawing"), /schedule\(\)/);
+  assert.match(functionSource(app, "invokeAIAction"), /requestAI\(action\)/);
 });

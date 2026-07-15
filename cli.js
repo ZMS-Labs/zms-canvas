@@ -115,7 +115,7 @@ function isPlaceholder(value) {
 }
 
 function apiConfigurationIssues(env) {
-  const issues = [], key = String(env.OPENAI_API_KEY || env.OPENAI_PRO_API_KEY || "").trim(), model = String(env.OPENAI_MODEL || "").trim(), apiUrl = String(env.OPENAI_API_URL || "").trim();
+  const issues = [], key = String(env.OPENAI_API_KEY || "").trim(), model = String(env.OPENAI_MODEL || "").trim(), apiUrl = String(env.OPENAI_API_URL || "").trim();
   if (!key || isPlaceholder(key)) issues.push("OPENAI_API_KEY");
   if (!model || isPlaceholder(model)) issues.push("OPENAI_MODEL");
   if (!apiUrl || isPlaceholder(apiUrl)) issues.push("OPENAI_API_URL");
@@ -126,6 +126,7 @@ function apiConfigurationIssues(env) {
     } catch { issues.push("OPENAI_API_URL"); }
   }
   if (env.OPENAI_API_FORMAT && !["openai", "anthropic"].includes(String(env.OPENAI_API_FORMAT).trim().toLowerCase())) issues.push("OPENAI_API_FORMAT");
+  if (env.PENECHO_AI_IMAGE_FORMAT && !["webp", "png", "jpeg", "jpg"].includes(String(env.PENECHO_AI_IMAGE_FORMAT).trim().toLowerCase())) issues.push("PENECHO_AI_IMAGE_FORMAT");
   return [...new Set(issues)];
 }
 
@@ -189,8 +190,8 @@ async function runCodexPreflight(configuration, options = {}) {
 }
 
 function checkNodeVersion() {
-  const major = Number(process.versions.node.split(".", 1)[0]);
-  return Number.isInteger(major) && major >= 18;
+  const [major,minor]=process.versions.node.split(".",2).map(Number);
+  return Number.isInteger(major)&&Number.isInteger(minor)&&(major>18||major===18&&minor>=17);
 }
 
 function checkAssets(packageRoot = PACKAGE_ROOT) {
@@ -273,7 +274,7 @@ async function runDoctor(args, configuration, options = {}) {
   const output = options.output || process.stdout, errorOutput = options.errorOutput || process.stderr;
   let ready = true;
   const report = (ok, message) => { output.write(`[${ok ? "ok" : "fail"}] ${message}\n`); if (!ok) ready = false; };
-  report(checkNodeVersion(), `Node.js ${process.versions.node} (18+ required)`);
+  report(checkNodeVersion(), `Node.js ${process.versions.node} (18.17+ required)`);
   const missingAssets = checkAssets(configuration.packageRoot);
   report(missingAssets.length === 0, missingAssets.length ? `Missing PenEcho assets: ${missingAssets.join(", ")}` : "PenEcho assets are present");
   const port = await (options.portChecker || checkPortAvailable)(configuration.port, configuration.env.HOST || "0.0.0.0");

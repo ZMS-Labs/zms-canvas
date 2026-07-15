@@ -17,6 +17,7 @@ Put a question, equation, diagram, or half-formed idea anywhere on the canvas an
 - Get answers, hints, explanations, continuations, formulas, plots, and diagrams directly on the canvas.
 - Move, resize, accept, or discard every AI draft before it becomes part of your work.
 - Draw naturally with a stylus or mouse, then pan and zoom across a sparse `20,000 x 20,000` canvas.
+- Draw a freehand lasso around confirmed ink to move, resize, or recolor it locally; accepting or cancelling a selection never triggers an AI request.
 - Choose Arcane, Sci-fi, or Research mode to match the kind of problem you are exploring.
 - Save lightweight snapshots locally in your browser. Starting a new canvas can overwrite the current snapshot, save a new copy, or continue without saving; unconfirmed AI drafts are never included.
 
@@ -41,7 +42,7 @@ The browser sends only the relevant canvas crop and geometry. The server validat
 
 ## Quick start
 
-You need [Node.js 18+](https://nodejs.org/) and either an API key or an installed [Codex CLI](https://developers.openai.com/codex/cli).
+You need [Node.js 18.17+](https://nodejs.org/) and either an API key or an installed [Codex CLI](https://developers.openai.com/codex/cli).
 
 ```bash
 npm install -g penecho
@@ -59,7 +60,8 @@ The doctor guides you through the API URL, model, and hidden API-key prompt. It 
 ### Option 2: Codex on your machine
 
 ```bash
-codex login
+# You are already signed in to Codex.
+# codex login
 penecho doctor --codex
 penecho --codex
 ```
@@ -72,7 +74,14 @@ Choose another port when needed:
 penecho --codex --port 4000
 ```
 
-When running from source, copy the appropriate example to `.env` and use `npm start` as before.
+### Run from this source directory
+
+No separate build step is required. Copy `env.api.example` or `env.codex.example` to `.env`, update its settings, then run:
+
+```bash
+npm install
+npm start
+```
 
 Open [http://localhost:3888](http://localhost:3888). Other devices on the same trusted LAN can use `http://<this-computer-LAN-IP>:3888`.
 
@@ -99,7 +108,7 @@ PenEcho listens on `0.0.0.0:3888` by default so localhost and trusted-LAN access
 - **Codex CLI mode:** use it only on the local machine or a trusted, directly connected LAN. A valid request starts a local `codex exec` process, so do not expose this mode directly to the public internet or an untrusted reverse proxy. PenEcho checks the Host, client network, exact Origin, process-lifetime session cookie, JSON content type, and concurrency before launching Codex, but these checks are not a substitute for an isolated operating-system account, VM, or container in higher-risk environments.
 - **API mode:** local, LAN, proxy, and remote requests are intentionally accepted without PenEcho-level Host or Origin restrictions. If you expose it publicly, place it behind HTTPS, authentication, rate limiting, and request-size controls. Keep `.env` and provider keys private; credentials remain in the Node.js process and are never sent to browser code.
 
-For either mode, keep debug artifacts disabled in production unless you are actively diagnosing a problem, and never publish `.env`, logs, screenshots, or saved requests containing private content.
+For either mode, keep debug artifacts and request tracing disabled in production unless you are actively diagnosing a problem, and never publish `.env`, logs, screenshots, or saved requests containing private content. `PENECHO_REQUEST_TRACE=true` stores each valid AI request under `logs/requests` (or the configured state directory), including the source `atlas.png`, the configured outbound WebP/JPEG artifact when encoding succeeds, MIME types and byte sizes, the outbound model request with credentials redacted, every raw and parsed model response, any PNG format fallback, and the final success, cancellation, timeout, or error state. `PENECHO_REQUEST_TRACE_LIMIT` controls retention and defaults to 100.
 
 ## Useful configuration
 
@@ -109,8 +118,11 @@ The example files are ready to run. These settings cover most custom setups:
 | --- | --- |
 | `OPENAI_API_URL` | OpenAI-compatible or Anthropic base URL |
 | `OPENAI_MODEL` | Model used in API mode |
+| `PENECHO_AI_IMAGE_FORMAT` | Image format sent to the model: `webp` (default), `png`, or `jpeg`; `jpg` is accepted as an alias |
 | `CODEX_CLI_MODEL` | Optional model override for Codex CLI mode |
 | `AUTO_AI_DELAY_SECONDS` | Initial delay before automatic recognition; the browser control can override it from 0 to 10 seconds |
+| `PENECHO_REQUEST_TRACE` | Save local per-request image, outbound request, response, and outcome traces; disabled by default |
+| `PENECHO_REQUEST_TRACE_LIMIT` | Number of local request traces retained, default 100 and maximum 1000 |
 | `HOST` / `PORT` | Server address and port, default `0.0.0.0:3888` |
 
 Run the checks before submitting a change:

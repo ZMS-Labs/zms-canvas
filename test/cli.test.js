@@ -75,6 +75,18 @@ test("API start never prompts and points incomplete configuration to doctor", as
   assert.equal(output.text(), "");
 });
 
+test("API configuration requires the single supported key", () => {
+  assert.deepEqual(apiConfigurationIssues({ OPENAI_PRO_API_KEY:"legacy", OPENAI_API_URL:"https://example.test/v1", OPENAI_MODEL:"test-model" }), ["OPENAI_API_KEY"]);
+});
+
+test("API image format accepts WebP, PNG, JPEG, and the JPG alias", () => {
+  const base={OPENAI_API_KEY:"test-key",OPENAI_API_URL:"https://example.test/v1",OPENAI_MODEL:"test-model"};
+  for(const format of [undefined,"webp","png","jpeg","jpg"]){
+    assert.deepEqual(apiConfigurationIssues({...base,...(format?{PENECHO_AI_IMAGE_FORMAT:format}:{})}),[]);
+  }
+  assert.deepEqual(apiConfigurationIssues({...base,PENECHO_AI_IMAGE_FORMAT:"gif"}),["PENECHO_AI_IMAGE_FORMAT"]);
+});
+
 test("API doctor saves hidden credentials without printing them", async () => {
   const configuration = isolatedConfiguration(parseArgs(["doctor", "--api"]), { AI_PROVIDER: "api", PORT: "4000" }), output = capture();
   const secret = "sk-test-secret-that-must-not-echo";
