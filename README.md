@@ -7,6 +7,12 @@
 <p align="center">PenEcho is a shared canvas where handwriting, equations, diagrams, and spatial context become part of the conversation.</p>
 
 <p align="center">
+  <a href="https://discord.gg/3jrPJ3mXdX">
+    <img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&amp;logo=discord&amp;logoColor=white" alt="Join the PenEcho Discord">
+  </a>
+</p>
+
+<p align="center">
   <img src="https://github.com/erickong/penecho/releases/download/v0.1.0/penecho-demo.gif" alt="PenEcho turning handwritten work into an editable visual answer" width="100%">
 </p>
 
@@ -174,7 +180,9 @@ For implementation details, see the [architecture notes](docs/architecture.md).
 
 ## Build it with us
 
-PenEcho is still young, with real work left in recognition, visual tools, model support, and pen interaction. Open an issue, propose an idea, or send a pull request. If PenEcho clicks for you, star the repo, share the demo, and help us make it better.
+PenEcho is still young, with real work left in recognition, visual tools, model support, and pen interaction. Join the [PenEcho Discord](https://discord.gg/3jrPJ3mXdX) for real-time discussion, model testing, and shared canvas workflows. Use [GitHub Discussions](https://github.com/erickong/penecho/discussions) for ideas that should remain searchable, and [GitHub Issues](https://github.com/erickong/penecho/issues) for reproducible bugs and confirmed work.
+
+Open an issue, propose an idea, or send a pull request. If PenEcho clicks for you, star the repo, share the demo, and help us make it better.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
