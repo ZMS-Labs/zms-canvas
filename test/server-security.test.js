@@ -83,7 +83,7 @@ function startApiServer(responseContent = '{"intent":"none","commands":[]}', opt
         if(res.destroyed)return;
         const configured=typeof options.response==="function"?options.response({index:requests.length-1,requestBody}):null,status=configured?.status||options.status||200,responseBody=configured?.body;
         res.writeHead(status, { "Content-Type":"application/json", "x-request-id":"test-upstream-request" });
-        const successfulBody=options.format==="anthropic"?{id:"test-response-id",model:"test-upstream-model",stop_reason:"end_turn",content:[{type:"text",text:responseBody??responseContent}]}:{id:"test-response-id",model:"test-upstream-model",choices:[{finish_reason:"stop",message:{content:responseBody??responseContent}}]};
+        const successfulBody=options.format==="anthropic"?{id:"test-response-id",model:"test-upstream-model",stop_reason:options.stopReason||"end_turn",content:options.contentBlocks??[{type:"text",text:responseBody??responseContent}]}:{id:"test-response-id",model:"test-upstream-model",choices:[{finish_reason:"stop",message:{content:responseBody??responseContent}}]};
         res.end(status===200?JSON.stringify(successfulBody):responseBody??responseContent);
       };
       if(options.delayMs)setTimeout(reply,options.delayMs);
@@ -174,25 +174,13 @@ function validPayload() {
   };
 }
 
-test("API, Codex, and Claude environment files enable localhost and LAN directly", () => {
-  const api = fs.readFileSync(path.join(ROOT, ".env.api"), "utf8"), codex = fs.readFileSync(path.join(ROOT, ".env.codex"), "utf8"), claude=fs.readFileSync(path.join(ROOT,".env.claude"),"utf8"), generic=fs.readFileSync(path.join(ROOT,".env.example"),"utf8");
-  assert.match(api, /^AI_PROVIDER=api$/m);
-  assert.match(api, /^AI_EFFORT=max$/m);
-  assert.match(codex, /^AI_PROVIDER=codex-cli$/m);
-  assert.match(codex, /^AI_EFFORT=$/m);
-  assert.match(codex, /^CODEX_CLI_TIMEOUT_SECONDS=120$/m);
-  assert.match(claude, /^AI_PROVIDER=claude-cli$/m);
-  assert.match(claude, /^AI_EFFORT=$/m);
-  assert.match(claude, /^CLAUDE_CLI_MODEL=$/m);
-  assert.match(claude, /^CLAUDE_CLI_TIMEOUT_SECONDS=120$/m);
-  for(const example of [api,generic])assert.match(example,/^PENECHO_AI_IMAGE_FORMAT=webp$/m);
-  for (const example of [api, codex, claude]) {
-    assert.match(example, /^HOST=0\.0\.0\.0$/m);
-    assert.match(example, /^PORT=3888$/m);
-    assert.doesNotMatch(example, /PUBLIC_ORIGIN|ALLOW_REMOTE|LOCAL_PROVIDER|\bOSS\b/i);
-  }
-  assert.match(api, /^AI_API_FORMAT=openai$/m);
-  assert.doesNotMatch(api, /^OPENAI_/m);
+test("server uses applied global configuration and one timeout for every executor", () => {
+  const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8"), packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  assert.doesNotMatch(server, /loadEnv\(path\.join\(ROOT, ["']\.env["']\)\)/);
+  assert.match(server, /process\.env\.AI_TIMEOUT_SECONDS/);
+  assert.match(server, /MODEL_TIMEOUT_MS/);
+  assert.doesNotMatch(packageJson.files.join("\n"), /^\.env(?:\.|$)/m);
+  assert.equal(packageJson.scripts.start, undefined);
 });
 
 test("Codex CLI mode starts with no extra access or model-provider settings", { timeout: 10000 }, async () => {
@@ -206,7 +194,7 @@ test("Codex CLI mode starts with no extra access or model-provider settings", { 
 
 test("Claude CLI mode sends the canvas to the authenticated local CLI with the selected model and effort", { timeout:20000 }, async () => {
   const directory=await fs.promises.mkdtemp(path.join(os.tmpdir(),"penecho-server-claude-")),fakeCli=path.join(directory,"fake-claude.js"),record=path.join(directory,"record.json");
-  await fs.promises.writeFile(fakeCli, `"use strict";const fs=require("node:fs"),args=process.argv.slice(2),input=JSON.parse(fs.readFileSync(0,"utf8").trim()),image=input.message.content.find(part=>part.type==="image");fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({args,mediaType:image?.source?.media_type,hasImage:Boolean(image?.source?.data)}));const result={intent:"answer",observedText:"hi",message:"hello",commands:[]};process.stdout.write(JSON.stringify({type:"result",subtype:"success",result:JSON.stringify(result)}));\n`);
+  await fs.promises.writeFile(fakeCli, `"use strict";const fs=require("node:fs"),args=process.argv.slice(2),input=JSON.parse(fs.readFileSync(0,"utf8").trim()),image=input.message.content.find(part=>part.type==="image"),buffer=Buffer.from(image?.source?.data||"","base64");fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({args,mediaType:image?.source?.media_type,signature:buffer.toString("ascii",0,4)}));const result={intent:"answer",observedText:"hi",message:"hello",commands:[]};process.stdout.write(JSON.stringify({type:"result",subtype:"success",result:JSON.stringify(result)}));\n`);
   const {child,origin}=await startServer(claudeServerEnv(fakeCli,{AI_EFFORT:"max"}));
   try {
     const page=await fetch(origin),cookie=page.headers.get("set-cookie")?.split(";",1)[0];
@@ -214,11 +202,30 @@ test("Claude CLI mode sends the canvas to the authenticated local CLI with the s
     const response=await fetch(`${origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json",Origin:origin,Cookie:cookie},body:JSON.stringify(validPayload())}),body=await response.json(),saved=JSON.parse(await fs.promises.readFile(record,"utf8"));
     assert.equal(response.status,200);
     assert.equal(body.message,"hello");
-    assert.equal(saved.mediaType,"image/png");
-    assert.equal(saved.hasImage,true);
+    assert.equal(saved.mediaType,"image/webp");
+    assert.equal(saved.signature,"RIFF");
     assert.equal(saved.args[saved.args.indexOf("--model")+1],"sonnet");
     assert.equal(saved.args[saved.args.indexOf("--effort")+1],"max");
     assert.equal(saved.args[saved.args.indexOf("--tools")+1],"");
+  } finally {
+    await stopServer(child);
+    await fs.promises.rm(directory,{recursive:true,force:true});
+  }
+});
+
+test("Codex CLI mode writes the configured WebP image with a .webp extension", { timeout:20000 }, async () => {
+  const directory=await fs.promises.mkdtemp(path.join(os.tmpdir(),"penecho-server-codex-webp-")),fakeCli=path.join(directory,"fake-codex.js"),record=path.join(directory,"record.json");
+  await fs.promises.writeFile(fakeCli, `"use strict";const fs=require("node:fs"),path=require("node:path"),args=process.argv.slice(2),image=args[args.indexOf("-i")+1],buffer=fs.readFileSync(image),answer='{"intent":"answer","observedText":"hi","message":"hello","commands":[]}';fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({extension:path.extname(image),signature:buffer.toString("ascii",0,4),json:args.includes("--json")}));process.stdout.write(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:answer}})+"\\n");process.stdout.write(JSON.stringify({type:"turn.completed",usage:{}})+"\\n");setInterval(()=>{},1000);\n`);
+  const {child,origin}=await startServer(serverEnv({CODEX_CLI_PATH:fakeCli}));
+  try {
+    const page=await fetch(origin),cookie=page.headers.get("set-cookie")?.split(";",1)[0];
+    const started=Date.now(),response=await fetch(`${origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json",Origin:origin,Cookie:cookie},body:JSON.stringify(validPayload())}),body=await response.json(),elapsedMs=Date.now()-started,saved=JSON.parse(await fs.promises.readFile(record,"utf8"));
+    assert.equal(response.status,200);
+    assert.equal(body.message,"hello");
+    assert.ok(elapsedMs<1500,`streamed server response took ${elapsedMs}ms`);
+    assert.equal(saved.extension,".webp");
+    assert.equal(saved.signature,"RIFF");
+    assert.equal(saved.json,true);
   } finally {
     await stopServer(child);
     await fs.promises.rm(directory,{recursive:true,force:true});
@@ -248,8 +255,21 @@ test("global API effort maps to OpenAI and Anthropic request fields", { timeout:
   try {
     const response=await fetch(`${anthropicServer.origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(validPayload())});
     assert.equal(response.status,200);
-    assert.equal(JSON.parse(anthropic.requests[0]).output_config.effort,"future-model-level");
+    const request=JSON.parse(anthropic.requests[0]);
+    assert.equal(request.output_config.effort,"future-model-level");
+    assert.equal(request.max_tokens,8192);
+    assert.match(request.system,/within approximately 4096 tokens/);
   } finally { await stopServer(anthropicServer.child); await new Promise(resolve=>anthropic.server.close(resolve)); }
+});
+
+test("Anthropic output exhaustion reports the real response limit instead of a JSON parser error", { timeout:20000 }, async () => {
+  const upstream=await startApiServer(undefined,{format:"anthropic",stopReason:"max_tokens",contentBlocks:[]}),running=await startServer(apiServerEnv(upstream.origin,{AI_API_FORMAT:"anthropic",AI_API_URL:upstream.origin,AI_EFFORT:"high"}));
+  try {
+    const response=await fetch(`${running.origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(validPayload())}),body=await response.json();
+    assert.equal(response.status,502);
+    assert.match(body.error,/8192-token response allowance/);
+    assert.doesNotMatch(body.error,/Unexpected end of JSON input/);
+  } finally { await stopServer(running.child); await new Promise(resolve=>upstream.server.close(resolve)); }
 });
 
 test("Codex process launches require a same-origin session and do not retain failed processes", { timeout: 20000 }, async () => {
@@ -458,30 +478,8 @@ test("API image format configuration can send the source PNG unchanged", { timeo
   }
 });
 
-test("API image format configuration sends high-quality JPEG with trace metadata", { timeout: 20000 }, async () => {
-  const directory=await fs.promises.mkdtemp(path.join(os.tmpdir(),"penecho-jpeg-format-")),upstream=await startApiServer(),{child,origin}=await startServer(apiServerEnv(upstream.origin,{PENECHO_AI_IMAGE_FORMAT:"jpeg",PENECHO_STATE_DIR:directory,PENECHO_REQUEST_TRACE:"true"}));
-  try {
-    const response=await fetch(`${origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(validPayload())}),body=await response.json();
-    assert.equal(response.status,200);
-    assert.equal(body.attempts,1);
-    const outbound=JSON.parse(upstream.requests[0]),imageUrl=outbound.messages[1].content.find(part=>part.type==="image_url").image_url.url,jpeg=Buffer.from(imageUrl.slice(imageUrl.indexOf(",")+1),"base64");
-    assert.match(imageUrl,/^data:image\/jpeg;base64,/);
-    assert.deepEqual([...jpeg.subarray(0,2)],[0xff,0xd8]);
-    const root=path.join(directory,"logs","requests"),name=(await fs.promises.readdir(root)).find(entry=>entry.endsWith(body.requestId)),trace=JSON.parse(await fs.promises.readFile(path.join(root,name,"trace.json"),"utf8"));
-    assert.equal(trace.image.preferredFile,"atlas.jpg");
-    assert.equal(trace.image.preferredMimeType,"image/jpeg");
-    assert.equal(trace.image.encoding.configuredFormat,"jpeg");
-    assert.equal(trace.image.encoding.lossless,false);
-    assert.equal(trace.attempts[0].outbound.imageEncoding,"jpeg-q95-444");
-  } finally {
-    await stopServer(child);
-    await new Promise(resolve=>upstream.server.close(resolve));
-    await fs.promises.rm(directory,{recursive:true,force:true});
-  }
-});
-
-test("invalid API image format configuration fails before an upstream request", { timeout: 20000 }, async () => {
-  const upstream=await startApiServer(),{child,origin}=await startServer(apiServerEnv(upstream.origin,{PENECHO_AI_IMAGE_FORMAT:"gif"}));
+test("unsupported image format configuration fails before an upstream request", { timeout: 20000 }, async () => {
+  const upstream=await startApiServer(),{child,origin}=await startServer(apiServerEnv(upstream.origin,{PENECHO_AI_IMAGE_FORMAT:"jpeg"}));
   try {
     const response=await fetch(`${origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(validPayload())}),body=await response.json();
     assert.equal(response.status,400);
@@ -574,7 +572,7 @@ test("a new Codex request immediately supersedes the running request", { timeout
   try {
     const page = await fetch(origin), cookie = page.headers.get("set-cookie")?.split(";", 1)[0], headers = { "Content-Type":"application/json", Origin:origin, Cookie:cookie };
     const config=await fetch(`${origin}/api/config`).then(response=>response.json());
-    assert.equal(config.aiRequestTimeoutMs,260000);
+    assert.equal(config.aiRequestTimeoutMs,380000);
     const first = fetch(`${origin}/api/ai/command`, { method:"POST", headers, body:JSON.stringify(validPayload()) }).catch(error => error);
     const deadline = Date.now() + 5000;
     while (!fs.existsSync(startedFile) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
@@ -711,8 +709,8 @@ test("static page keeps strict styles while allowing the pinned MathJax CDN", ()
 });
 
 test("API mode uses one configured key without probes or fallback credentials", () => {
-  const server=fs.readFileSync(path.join(ROOT,"server.js"),"utf8"),cli=fs.readFileSync(path.join(ROOT,"cli.js"),"utf8"),example=fs.readFileSync(path.join(ROOT,".env.example"),"utf8");
-  for(const source of [server,cli,example])assert.doesNotMatch(source,/OPENAI_PRO_API_KEY/);
+  const server=fs.readFileSync(path.join(ROOT,"server.js"),"utf8"),cli=fs.readFileSync(path.join(ROOT,"cli.js"),"utf8"),configure=fs.readFileSync(path.join(ROOT,"configure-ui.js"),"utf8");
+  for(const source of [server,cli,configure])assert.doesNotMatch(source,/OPENAI_PRO_API_KEY/);
   assert.doesNotMatch(server,/api-health|api-selection|api-runtime-failure|refreshApiConfig|testApiKey|HEALTH_INTERVAL|HEALTH_TIMEOUT/);
   assert.match(server,/providerRequest\(API_KEY,MODEL,text,atlasImage\)/);
 });

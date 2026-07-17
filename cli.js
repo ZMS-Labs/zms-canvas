@@ -5,20 +5,20 @@ const fs = require("fs");
 const net = require("net");
 const os = require("os");
 const path = require("path");
-const readline = require("readline/promises");
 const { spawn } = require("child_process");
-const { Writable } = require("stream");
+const { resolveApiConfig } = require("./api-config.js");
 const { resolveCodexLaunch } = require("./codex-cli.js");
-const { resolveClaudeLaunch } = require("./claude-cli.js");
+const { callClaudeCli, resolveClaudeLaunch } = require("./claude-cli.js");
+const { isPromptExit, runConfigureMenu } = require("./configure-ui.js");
 
 const PACKAGE_ROOT = __dirname;
 const PACKAGE_JSON = require("./package.json");
 const DEFAULT_PORT = 3888;
+const DEFAULT_TIMEOUT_SECONDS = 180;
 const MAX_COMMAND_OUTPUT = 1024 * 1024;
-const REQUIRED_ASSETS = ["server.js", "codex-cli.js", "claude-cli.js", "public/index.html", "public/app.js", "public/draw.js", "public/selection.js", "public/style.css"];
+const REQUIRED_ASSETS = ["server.js", "api-config.js", "configure-ui.js", "codex-cli.js", "claude-cli.js", "public/index.html", "public/app.js", "public/draw.js", "public/selection.js", "public/style.css"];
 
 const PROVIDER_OPTIONS = "api, codex-cli, or claude-cli";
-const AI_EFFORT_EXAMPLES = "low, medium, high, xhigh, max";
 
 function parsePort(value) {
   const text = String(value ?? "").trim();
@@ -36,12 +36,12 @@ function parseTextOption(name, value) {
 }
 
 function parseArgs(argv = []) {
-  const result = { command: "start", provider: null, port: null, model: null, effort: null, help: false, version: false };
+  const result = { command: "start", provider: null, port: null, model: null, effort: null, config: null, help: false, version: false };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
-    if (argument === "doctor") {
-      if (result.command === "doctor") throw new Error("The doctor command may only be specified once.");
-      result.command = "doctor";
+    if (argument === "doctor" || argument === "configure") {
+      if (result.command !== "start") throw new Error("Only one command may be specified.");
+      result.command = argument;
     } else if (argument === "--api") {
       if (result.provider && result.provider !== "api") throw new Error("--api, --codex, and --claude cannot be used together.");
       result.provider = "api";
@@ -66,6 +66,11 @@ function parseArgs(argv = []) {
       result.effort = parseTextOption("--effort", argv[++index]);
     } else if (argument.startsWith("--effort=")) {
       result.effort = parseTextOption("--effort", argument.slice("--effort=".length));
+    } else if (argument === "--config") {
+      if (index + 1 >= argv.length || argv[index + 1].startsWith("--")) throw new Error("--config requires a file path.");
+      result.config = parseTextOption("--config", argv[++index]);
+    } else if (argument.startsWith("--config=")) {
+      result.config = parseTextOption("--config", argument.slice("--config=".length));
     } else if (argument === "--help" || argument === "-h") {
       result.help = true;
     } else if (argument === "--version" || argument === "-v") {
@@ -101,7 +106,8 @@ function loadEnvFile(file) {
 }
 
 function normalizeProvider(value) {
-  const provider = String(value || "api").trim().toLowerCase();
+  const provider = String(value || "").trim().toLowerCase();
+  if (!provider) return null;
   if (provider === "api") return "api";
   if (provider === "codex" || provider === "codex-cli") return "codex-cli";
   if (provider === "claude" || provider === "claude-cli") return "claude-cli";
@@ -113,13 +119,12 @@ function resolveConfiguration(args, options = {}) {
     cwd = path.resolve(options.cwd || process.cwd()),
     home = path.resolve(options.home || os.homedir()),
     packageRoot = path.resolve(options.packageRoot || PACKAGE_ROOT),
-    stateDir = sourceEnv.PENECHO_STATE_DIR ? path.resolve(cwd, sourceEnv.PENECHO_STATE_DIR) : path.join(home, ".penecho");
-  const env = {
-    ...loadEnvFile(path.join(packageRoot, ".env")),
-    ...loadEnvFile(path.join(stateDir, "config.env")),
-    ...loadEnvFile(path.join(cwd, ".env")),
-    ...sourceEnv,
-  };
+    defaultStateDir = sourceEnv.PENECHO_STATE_DIR ? path.resolve(cwd, sourceEnv.PENECHO_STATE_DIR) : path.join(home, ".penecho"),
+    configFile = args.config ? path.resolve(cwd, args.config) : path.join(defaultStateDir, "config.env"),
+    fileEnv = loadEnvFile(configFile),
+    configuredStateDir = sourceEnv.PENECHO_STATE_DIR || fileEnv.PENECHO_STATE_DIR,
+    stateDir = configuredStateDir ? path.resolve(cwd, configuredStateDir) : defaultStateDir;
+  const env = { ...fileEnv, ...sourceEnv };
   if (args.provider) env.AI_PROVIDER = args.provider;
   if (args.port !== null) env.PORT = String(args.port);
   const provider = normalizeProvider(env.AI_PROVIDER);
@@ -140,7 +145,9 @@ function resolveConfiguration(args, options = {}) {
     home,
     packageRoot,
     stateDir,
-    configFile: path.join(stateDir, "config.env"),
+    configFile,
+    configExplicit:Boolean(args.config),
+    configExists:fs.existsSync(configFile),
     provider,
     port: env.PORT === undefined || env.PORT === "" ? DEFAULT_PORT : parsePort(env.PORT),
   };
@@ -160,6 +167,13 @@ function normalizedEffort(value) {
   return String(value || "").trim();
 }
 
+function configuredTimeoutSeconds(env) {
+  const text = String(env.AI_TIMEOUT_SECONDS || env.CODEX_CLI_TIMEOUT_SECONDS || env.CLAUDE_CLI_TIMEOUT_SECONDS || DEFAULT_TIMEOUT_SECONDS).trim(),
+    value = Number(text);
+  if (!Number.isInteger(value) || value < 10 || value > 600) throw new Error("AI_TIMEOUT_SECONDS must be an integer from 10 to 600.");
+  return value;
+}
+
 function apiConfigurationIssues(env) {
   const issues = [], key = apiEnvValue(env, "KEY"), model = apiEnvValue(env, "MODEL"), apiUrl = apiEnvValue(env, "URL"), format = apiEnvValue(env, "FORMAT");
   if (!key || isPlaceholder(key)) issues.push("AI_API_KEY");
@@ -172,8 +186,49 @@ function apiConfigurationIssues(env) {
     } catch { issues.push("AI_API_URL"); }
   }
   if (format && !["openai", "anthropic"].includes(format.toLowerCase())) issues.push("AI_API_FORMAT");
-  if (env.PENECHO_AI_IMAGE_FORMAT && !["webp", "png", "jpeg", "jpg"].includes(String(env.PENECHO_AI_IMAGE_FORMAT).trim().toLowerCase())) issues.push("PENECHO_AI_IMAGE_FORMAT");
+  if (env.PENECHO_AI_IMAGE_FORMAT && !["webp", "png"].includes(String(env.PENECHO_AI_IMAGE_FORMAT).trim().toLowerCase())) issues.push("PENECHO_AI_IMAGE_FORMAT");
   return [...new Set(issues)];
+}
+
+function safeApiDiagnostic(value, key) {
+  let text = String(value || "").replace(/[\r\n\t]+/g, " ").trim();
+  if (key) text = text.split(key).join("[redacted]");
+  return text.slice(0, 500);
+}
+
+async function testApiConnection(env, options = {}) {
+  const issues = apiConfigurationIssues(env);
+  if (issues.length) throw new Error(`API configuration is incomplete: ${issues.join(", ")}`);
+  const apiUrl = apiEnvValue(env, "URL"), format = apiEnvValue(env, "FORMAT").toLowerCase(), model = apiEnvValue(env, "MODEL"), key = apiEnvValue(env, "KEY"),
+    effort = normalizedEffort(env.AI_EFFORT) || "max", api = resolveApiConfig(apiUrl, format || undefined);
+  if (!api) throw new Error("AI_API_URL and AI_API_FORMAT do not describe a compatible OpenAI or Anthropic endpoint.");
+  const request = api.format === "anthropic"
+    ? {
+        headers: { "Content-Type":"application/json", "x-api-key":key, "anthropic-version":"2023-06-01" },
+        body: JSON.stringify({ model, max_tokens:10, temperature:0, output_config:{ effort }, messages:[{ role:"user", content:"Reply with OK." }] }),
+      }
+    : {
+        headers: { "Content-Type":"application/json", Authorization:`Bearer ${key}` },
+        body: JSON.stringify({ model, messages:[{ role:"user", content:"Reply with OK." }], max_tokens:10, temperature:0, reasoning_effort:effort }),
+      };
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  if (typeof fetchImpl !== "function") throw new Error("This Node.js version does not provide fetch().");
+  const timeoutMs = options.timeoutMs || configuredTimeoutSeconds(env) * 1000, controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetchImpl(api.endpoint, { method:"POST", redirect:"error", signal:controller.signal, ...request });
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`API connection test timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+    throw new Error(`API connection failed: ${safeApiDiagnostic(error.message, key) || "network error"}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  const responseText = await response.text();
+  if (!response.ok) {
+    const diagnostic = safeApiDiagnostic(responseText, key);
+    throw new Error(`${api.format} API returned HTTP ${response.status}${diagnostic ? `: ${diagnostic}` : ""}`);
+  }
+  return { format:api.format, status:response.status };
 }
 
 function runCaptured(launch, args, options = {}) {
@@ -235,6 +290,20 @@ async function runCodexPreflight(configuration, options = {}) {
   } catch (error) { return { ok: false, error: `Codex CLI check failed: ${error.message}` }; }
 }
 
+async function codexBundledModels(configuration, options = {}) {
+  const runner = options.runner || runCaptured;
+  let launch;
+  try { launch = resolveCodexLaunch(configuration.env.CODEX_CLI_PATH || "codex", configuration.env); }
+  catch (error) { throw new Error(error.message); }
+  const result = await runner(launch, ["debug", "models", "--bundled"], { cwd:configuration.cwd, env:configuration.env, timeoutMs:5000 });
+  if (result.code !== 0) throw new Error("Codex CLI could not read its bundled model catalog. Upgrade Codex with `npm install -g @openai/codex@latest`.");
+  let catalog;
+  try { catalog = JSON.parse(result.stdout); }
+  catch { throw new Error("Codex CLI returned an invalid bundled model catalog. Upgrade Codex with `npm install -g @openai/codex@latest`."); }
+  if (!Array.isArray(catalog?.models)) throw new Error("Codex CLI bundled model catalog is missing its model list.");
+  return catalog.models.map(item => String(item?.slug || "").trim()).filter(Boolean);
+}
+
 async function runClaudePreflight(configuration, options = {}) {
   const runner = options.runner || runCaptured;
   let launch;
@@ -282,63 +351,100 @@ function writeConfigFile(file, values) {
   try { fs.chmodSync(file, 0o600); } catch (error) { if (process.platform !== "win32") throw error; }
 }
 
-function createPromptIo(input = process.stdin, output = process.stdout) {
-  return {
-    interactive: Boolean(input.isTTY && output.isTTY),
-    async ask(label, defaultValue = "") {
-      const terminal = readline.createInterface({ input, output });
-      try {
-        const suffix = defaultValue ? ` [${defaultValue}]` : "";
-        const answer = await terminal.question(`${label}${suffix}: `);
-        return answer.trim() || defaultValue;
-      } finally { terminal.close(); }
-    },
-    async askHidden(label) {
-      const sink = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
-      output.write(`${label}: `);
-      const terminal = readline.createInterface({ input, output: sink, terminal: Boolean(input.isTTY) });
-      try { return (await terminal.question("")).trim(); }
-      finally { terminal.close(); output.write("\n"); }
-    },
+function saveConfiguration(configuration, updates = {}) {
+  const saved = { ...loadEnvFile(configuration.configFile) }, legacyMappings = {
+    OPENAI_API_FORMAT:"AI_API_FORMAT",
+    OPENAI_API_KEY:"AI_API_KEY",
+    OPENAI_API_URL:"AI_API_URL",
+    OPENAI_MODEL:"AI_API_MODEL",
   };
-}
-
-async function promptApiConfiguration(configuration, options = {}) {
-  const prompt = options.prompt || createPromptIo(), output = options.output || process.stdout;
-  if (!prompt.interactive && !options.allowNonInteractive) throw new Error("Interactive setup requires a terminal.");
-  output.write(`PenEcho will save API configuration to:\n  ${configuration.configFile}\n`);
-  output.write("The API key is stored locally in plaintext and will not be displayed. PenEcho sets owner-only permissions on POSIX systems; protect this file as a credential.\n\n");
-  const currentFormat = apiEnvValue(configuration.env, "FORMAT").toLowerCase(),
-    format = (await prompt.ask("API format (openai or anthropic)", ["openai", "anthropic"].includes(currentFormat) ? currentFormat : "openai")).toLowerCase();
-  if (!["openai", "anthropic"].includes(format)) throw new Error("AI_API_FORMAT must be openai or anthropic.");
-  const apiUrl = await prompt.ask("API base URL", apiEnvValue(configuration.env, "URL") || (format === "anthropic" ? "https://api.anthropic.com" : "https://api.openai.com/v1")),
-    model = await prompt.ask("Model", apiEnvValue(configuration.env, "MODEL") || (format === "anthropic" ? "claude-sonnet-5" : "gpt-5.6-sol")),
-    effort = await prompt.ask(`Reasoning effort (known values: ${AI_EFFORT_EXAMPLES}; other model-specific strings are allowed)`, normalizedEffort(configuration.env.AI_EFFORT) || "max");
-  const apiKey = await prompt.askHidden("API key (hidden)");
-  if (!apiKey) throw new Error("API key cannot be empty.");
-  for (const [name, value] of Object.entries({ AI_API_FORMAT: format, AI_API_URL: apiUrl, AI_API_MODEL: model, AI_API_KEY: apiKey, AI_EFFORT: effort })) {
-    if (/\r|\n|\0/.test(value)) throw new Error(`${name} contains invalid characters.`);
+  for (const [legacy, canonical] of Object.entries(legacyMappings)) {
+    if (saved[canonical] === undefined && saved[legacy] !== undefined) saved[canonical] = saved[legacy];
   }
-  const saved = {
-    ...loadEnvFile(configuration.configFile),
-    AI_PROVIDER: "api",
-    AI_API_FORMAT: format,
-    AI_API_KEY: apiKey,
-    AI_API_URL: apiUrl,
-    AI_API_MODEL: model,
-    AI_EFFORT: effort,
-    HOST: configuration.env.HOST || "0.0.0.0",
-    PORT: String(configuration.port),
+  const defaults = {
+    AI_TIMEOUT_SECONDS:String(saved.AI_TIMEOUT_SECONDS || configuration.env.AI_TIMEOUT_SECONDS || saved.CODEX_CLI_TIMEOUT_SECONDS || saved.CLAUDE_CLI_TIMEOUT_SECONDS || configuration.env.CODEX_CLI_TIMEOUT_SECONDS || configuration.env.CLAUDE_CLI_TIMEOUT_SECONDS || DEFAULT_TIMEOUT_SECONDS),
+    PENECHO_AI_IMAGE_FORMAT:String(configuration.env.PENECHO_AI_IMAGE_FORMAT || "webp"),
+    AUTO_AI_DELAY_SECONDS:String(configuration.env.AUTO_AI_DELAY_SECONDS || "1.2"),
+    HOST:String(configuration.env.HOST || "0.0.0.0"),
+    PORT:String(configuration.env.PORT || configuration.port || DEFAULT_PORT),
+    PENECHO_REQUEST_TRACE:String(configuration.env.PENECHO_REQUEST_TRACE || "false"),
+    PENECHO_REQUEST_TRACE_LIMIT:String(configuration.env.PENECHO_REQUEST_TRACE_LIMIT || "100"),
   };
-  for (const legacy of ["OPENAI_API_FORMAT", "OPENAI_API_KEY", "OPENAI_API_URL", "OPENAI_MODEL"]) delete saved[legacy];
+  for (const [name, value] of Object.entries(defaults)) if (saved[name] === undefined) saved[name] = value;
+  for (const [name, value] of Object.entries(updates)) {
+    if (value === null || value === undefined) delete saved[name];
+    else {
+      const text = String(value);
+      if (/[\r\n\0]/.test(text)) throw new Error(`${name} contains invalid characters.`);
+      saved[name] = text;
+    }
+  }
+  for (const legacy of ["OPENAI_API_FORMAT", "OPENAI_API_KEY", "OPENAI_API_URL", "OPENAI_MODEL", "CODEX_CLI_TIMEOUT_SECONDS", "CLAUDE_CLI_TIMEOUT_SECONDS"]) delete saved[legacy];
   writeConfigFile(configuration.configFile, saved);
+  for (const name of ["OPENAI_API_FORMAT", "OPENAI_API_KEY", "OPENAI_API_URL", "OPENAI_MODEL", "CODEX_CLI_TIMEOUT_SECONDS", "CLAUDE_CLI_TIMEOUT_SECONDS"]) delete configuration.env[name];
   Object.assign(configuration.env, saved);
-  output.write(`API configuration saved to ${configuration.configFile}.\n`);
+  configuration.provider = normalizeProvider(saved.AI_PROVIDER);
+  configuration.port = parsePort(saved.PORT);
+  configuration.configExists = true;
   return saved;
 }
 
+const CONFIG_TEST_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=";
+const CONFIG_TEST_WEBP = "data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA4AAAAvAAAAAAcQEf0PRET/Aw==";
+
+function configuredTestImage(env) {
+  return String(env.PENECHO_AI_IMAGE_FORMAT || "webp").trim().toLowerCase() === "png" ? CONFIG_TEST_IMAGE : CONFIG_TEST_WEBP;
+}
+
+function cliTestError(error) {
+  const message = String(error?.message || "CLI test failed.").replace(/[\r\n\t]+/g, " ").trim(),
+    diagnostic = String(error?.diagnostic || "").replace(/[\r\n\t]+/g, " ").trim();
+  return diagnostic ? `${message} ${diagnostic}`.slice(0, 800) : message.slice(0, 800);
+}
+
+async function testConfiguredProvider(configuration, options = {}) {
+  const provider = configuration.provider;
+  if (!["api", "codex-cli", "claude-cli"].includes(provider)) throw new Error(`AI_PROVIDER must be ${PROVIDER_OPTIONS}.`);
+  if (provider === "api") {
+    const timeoutMs = configuredTimeoutSeconds(configuration.env) * 1000;
+    const result = await (options.apiTester || testApiConnection)(configuration.env, { fetchImpl:options.fetchImpl, timeoutMs });
+    return `${result.format} API responded with HTTP ${result.status}.`;
+  }
+  const preflight = provider === "codex-cli"
+    ? await runCodexPreflight(configuration, { runner:options.runner })
+    : await runClaudePreflight(configuration, { runner:options.runner });
+  if (!preflight.ok) throw new Error(preflight.error);
+  if (provider === "codex-cli") {
+    const model = normalizedEffort(configuration.env.CODEX_CLI_MODEL);
+    if (!model) return `${preflight.version}; login is ready and the Codex CLI default model will be used. No model request was made.`;
+    const models = await codexBundledModels(configuration, { runner:options.runner });
+    if (!models.some(candidate => candidate.toLowerCase() === model.toLowerCase())) {
+      throw new Error(`Codex model "${model}" is not present in ${preflight.version}'s bundled model catalog. The configuration was saved; upgrade Codex or choose another model.`);
+    }
+    return `${preflight.version}; login is ready and ${model} exists in the bundled model catalog. No model request was made.`;
+  }
+  const timeoutMs = configuredTimeoutSeconds(configuration.env) * 1000;
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs), atlasImage = configuredTestImage(configuration.env);
+  try {
+    await (options.claudeCaller || callClaudeCli)({
+      executable:configuration.env.CLAUDE_CLI_PATH || "claude",
+      model:normalizedEffort(configuration.env.CLAUDE_CLI_MODEL) || null,
+      effort:normalizedEffort(configuration.env.AI_EFFORT) || null,
+      systemPrompt:"You are running a PenEcho configuration test. Do not use tools. Reply with OK only.",
+      prompt:"Reply with OK.",
+      atlasImage,
+      signal:controller.signal,
+      env:configuration.env,
+    });
+    return `${preflight.version}; the selected Claude model and effort responded successfully.`;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`Connection test timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+    throw new Error(cliTestError(error));
+  } finally { clearTimeout(timer); }
+}
+
 async function runDoctor(args, configuration, options = {}) {
-  const output = options.output || process.stdout, errorOutput = options.errorOutput || process.stderr;
+  const output = options.output || process.stdout;
   let ready = true;
   const report = (ok, message) => { output.write(`[${ok ? "ok" : "fail"}] ${message}\n`); if (!ok) ready = false; };
   report(checkNodeVersion(), `Node.js ${process.versions.node} (18.17+ required)`);
@@ -346,6 +452,8 @@ async function runDoctor(args, configuration, options = {}) {
   report(missingAssets.length === 0, missingAssets.length ? `Missing PenEcho assets: ${missingAssets.join(", ")}` : "PenEcho assets are present");
   const port = await (options.portChecker || checkPortAvailable)(configuration.port, configuration.env.HOST || "0.0.0.0");
   report(port.ok, port.ok ? `Port ${configuration.port} is available` : `Port ${configuration.port} is unavailable (${port.error})`);
+  try { report(true, `Unified model timeout is ${configuredTimeoutSeconds(configuration.env)} seconds`); }
+  catch (error) { report(false, error.message); }
   report(true, `Reasoning effort is ${configuration.env.AI_EFFORT || (configuration.provider === "api" ? "max (API default)" : "the CLI default")}`);
   if (configuration.provider === "codex-cli") report(true, `Model is ${configuration.env.CODEX_CLI_MODEL || "the Codex CLI default for PenEcho's isolated session"}`);
   if (configuration.provider === "claude-cli") report(true, `Model is ${configuration.env.CLAUDE_CLI_MODEL || "the Claude CLI default"}`);
@@ -353,14 +461,8 @@ async function runDoctor(args, configuration, options = {}) {
   if (!configuration.provider) {
     report(false, `AI_PROVIDER must be ${PROVIDER_OPTIONS}`);
   } else if (configuration.provider === "api") {
-    let issues = apiConfigurationIssues(configuration.env);
-    if (issues.length) {
-      try {
-        await promptApiConfiguration(configuration, { prompt: options.prompt, output, allowNonInteractive: options.allowNonInteractive });
-        issues = apiConfigurationIssues(configuration.env);
-      } catch (error) { errorOutput.write(`API setup: ${error.message}\n`); }
-    }
-    report(issues.length === 0, issues.length ? `API configuration is incomplete: ${issues.join(", ")}` : "API configuration is ready (no paid request was made)");
+    const issues = apiConfigurationIssues(configuration.env);
+    report(issues.length === 0, issues.length ? `API configuration is incomplete: ${issues.join(", ")}. Run \`penecho configure\`.` : "API configuration is ready (no paid request was made)");
   } else if (configuration.provider === "codex-cli") {
     const codex = await runCodexPreflight(configuration, { runner: options.runner });
     report(codex.ok, codex.ok ? `${codex.version}; login is ready (no model request was made)` : codex.error);
@@ -378,7 +480,7 @@ function applyConfiguration(env) {
 }
 
 function helpText() {
-  return `PenEcho ${PACKAGE_JSON.version}\n\nUsage:\n  penecho --api [--port 3888]\n  penecho --codex [--model MODEL] [--effort LEVEL] [--port 3888]\n  penecho --claude [--model MODEL] [--effort LEVEL] [--port 3888]\n  penecho doctor --api [--port 3888]\n  penecho doctor --codex [--model MODEL] [--effort LEVEL] [--port 3888]\n  penecho doctor --claude [--model MODEL] [--effort LEVEL] [--port 3888]\n\nOptions:\n  --api             Use an OpenAI-format or Anthropic-format API\n  --codex           Use the authenticated Codex CLI\n  --claude          Use the authenticated Claude CLI\n  --model <model>   Override the model for Codex or Claude CLI mode\n  --effort <level>  Override reasoning effort with a known or CLI-supported value\n  --port <port>     Listen on a port from 0 to 65535\n  -h, --help        Show help\n  -v, --version     Show version\n\nKnown effort values include low, medium, high, xhigh, and max. Other strings are passed to the selected CLI.\n\nExamples:\n  penecho --codex --model gpt-5.6-sol --effort low\n  penecho --claude --model sonnet --effort high\n\nSetup:\n  penecho doctor --api\n  penecho doctor --codex\n  penecho doctor --claude\n`;
+  return `PenEcho ${PACKAGE_JSON.version}\n\nUsage:\n  penecho [--config FILE] [--port 3888]\n  penecho configure [--config FILE]\n  penecho doctor [--api|--codex|--claude] [--config FILE]\n  penecho --codex [--model MODEL] [--effort LEVEL]\n  penecho --claude [--model MODEL] [--effort LEVEL]\n\nOptions:\n  --config <file>   Use this configuration file instead of ~/.penecho/config.env\n  --api             Use an OpenAI-compatible or Anthropic-compatible API\n  --codex           Use the authenticated Codex CLI\n  --claude          Use the authenticated Claude CLI\n  --model <model>   Override the model for Codex or Claude CLI mode\n  --effort <level>  Override reasoning effort with a known or CLI-supported value\n  --port <port>     Override the configured listening port\n  -h, --help        Show help\n  -v, --version     Show version\n\nRun \`penecho configure\` for the interactive configuration center. Known effort values include low, medium, high, xhigh, and max; other strings are passed through.\n\nExamples:\n  penecho configure\n  penecho\n  penecho --config ./team.env\n  penecho --codex --model gpt-5.6-sol --effort xhigh\n`;
 }
 
 async function main(argv = process.argv.slice(2), options = {}) {
@@ -392,15 +494,49 @@ async function main(argv = process.argv.slice(2), options = {}) {
   try { configuration = resolveConfiguration(args, options); }
   catch (error) { errorOutput.write(`PenEcho configuration error: ${error.message}\n`); return 1; }
 
+  const configure = async directProvider => {
+    try {
+      await runConfigureMenu(configuration, {
+        ui:options.ui,
+        input:options.input,
+        output,
+        allowNonInteractive:options.allowNonInteractive,
+        directProvider,
+        save:async updates => saveConfiguration(configuration, updates),
+        test:async () => testConfiguredProvider(configuration, options),
+      });
+      return true;
+    } catch (error) {
+      if (isPromptExit(error)) return true;
+      errorOutput.write(`PenEcho configuration failed: ${error.message}\n`);
+      return false;
+    }
+  };
+
+  if (args.command === "configure") {
+    return await configure(args.provider || "") ? 0 : 1;
+  }
   if (args.command === "doctor") return (await runDoctor(args, configuration, options)) ? 0 : 1;
+
+  const sourceEnv = options.env || process.env, sourceConfigured = Boolean(args.provider || String(sourceEnv.AI_PROVIDER || "").trim());
+  if (!configuration.configExists && !sourceConfigured) {
+    const input = options.input || process.stdin,
+      interactive = Boolean(options.ui?.interactive || options.allowNonInteractive || input.isTTY && output.isTTY);
+    if (!interactive) {
+      errorOutput.write(`PenEcho is not configured. Run \`penecho configure${args.config ? ` --config ${args.config}` : ""}\` in a terminal first.\n`);
+      return 1;
+    }
+    output.write(`PenEcho has no saved configuration. Opening the configuration center at ${configuration.configFile}.\n`);
+    if (!await configure("")) return 1;
+  }
   if (!configuration.provider) {
-    errorOutput.write(`PenEcho configuration error: AI_PROVIDER must be ${PROVIDER_OPTIONS}.\n`);
+    errorOutput.write(`PenEcho has no LLM source. Run \`penecho configure\` and select Claude CLI, Codex CLI, or API.\n`);
     return 1;
   }
   if (configuration.provider === "api") {
     const issues = apiConfigurationIssues(configuration.env);
     if (issues.length) {
-      errorOutput.write(`PenEcho API configuration is incomplete: ${issues.join(", ")}.\nRun \`penecho doctor --api\` to configure it.\n`);
+      errorOutput.write(`PenEcho API configuration is incomplete: ${issues.join(", ")}.\nRun \`penecho configure\` to correct it.\n`);
       return 1;
     }
   } else if (configuration.provider === "codex-cli") {
@@ -433,16 +569,19 @@ module.exports = {
   apiConfigurationIssues,
   checkAssets,
   checkPortAvailable,
-  createPromptIo,
+  codexBundledModels,
+  configuredTimeoutSeconds,
   helpText,
   loadEnvFile,
   main,
   parseArgs,
   parseEnvText,
-  promptApiConfiguration,
   resolveConfiguration,
   runCodexPreflight,
   runClaudePreflight,
   runDoctor,
+  saveConfiguration,
+  testConfiguredProvider,
+  testApiConnection,
   writeConfigFile,
 };

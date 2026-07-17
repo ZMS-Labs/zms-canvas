@@ -5,50 +5,17 @@ Thank you for improving PenEcho.
 ## Development Setup
 
 1. Install Node.js 18 or newer.
-2. Choose one execution mode:
-
-   **API mode**
+2. Install dependencies and link this checkout's command:
 
    ```bash
-   # macOS or Linux
-   cp .env.api .env
-
-   # Windows PowerShell
-   Copy-Item .env.api .env
+   npm install
+   npm link
    ```
 
-   Replace `AI_API_KEY`, `AI_API_URL`, and `AI_API_MODEL` in `.env` with your provider key, endpoint, and model.
+3. Run `penecho configure` and choose API, Codex CLI, or Claude CLI. Codex and Claude modes require their installed CLI to be authenticated first.
+4. Run `penecho` and open `http://localhost:3888`, or use this computer's LAN IP from another device on the same trusted network.
 
-   **Codex CLI mode**
-
-   ```bash
-   codex login
-
-   # macOS or Linux
-   cp .env.codex .env
-
-   # Windows PowerShell
-   Copy-Item .env.codex .env
-   ```
-
-   Codex mode uses the installed and authenticated Codex CLI. It does not require an API key and is not a local-model configuration.
-
-   **Claude CLI mode**
-
-   ```bash
-   claude auth login
-
-   # macOS or Linux
-   cp .env.claude .env
-
-   # Windows PowerShell
-   Copy-Item .env.claude .env
-   ```
-
-   Claude mode uses the installed and authenticated Claude Code CLI and does not require an API key.
-
-3. Run `npm start`.
-4. Open `http://localhost:3888`, or use this computer's LAN IP from another device on the same trusted network.
+The default development configuration is the same global `~/.penecho/config.env` used by the installed package. For an isolated test setup, use `penecho configure --config ./local.env` and `penecho --config ./local.env`. Project `.env` files are not loaded automatically.
 
 ## Before Submitting Changes
 
@@ -79,4 +46,4 @@ By opening a pull request and confirming the contributor-agreement checkbox, you
 
 ## Pull Requests
 
-Describe the user-visible behavior, implementation approach, validation performed, and any known limitations. Avoid committing `.env`, logs, browser test output, local agent state, or generated dependency directories.
+Describe the user-visible behavior, implementation approach, validation performed, and any known limitations. Avoid committing configuration files containing credentials, logs, browser test output, local agent state, or generated dependency directories.

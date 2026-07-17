@@ -50,6 +50,9 @@ function sanitizeClaudeEnv(env = process.env) {
     if (sourceName && env[sourceName] !== undefined) clean[sourceName] = env[sourceName];
   }
   clean.CLAUDE_CODE_SKIP_PROMPT_HISTORY = "1";
+  clean.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+  clean.CLAUDE_CODE_DISABLE_TERMINAL_TITLE = "1";
+  clean.MAX_THINKING_TOKENS = "0";
   return clean;
 }
 
@@ -63,18 +66,24 @@ function buildClaudeArgs({ systemPrompt, model, effort }) {
     "--safe-mode",
     "--disable-slash-commands",
     "--tools", "",
+    "--disallowedTools", "Agent,Task",
+    "--agents", "{}",
     "--strict-mcp-config",
     "--no-chrome",
+    "--prompt-suggestions", "false",
     "--permission-mode", "dontAsk",
     "--system-prompt", systemPrompt,
   ];
   if (model) args.push("--model", model);
-  if (effort) args.push("--effort", effort);
+  if (effort) {
+    args.push("--effort", effort);
+    args.push("--settings", JSON.stringify({ env: { CLAUDE_CODE_EFFORT_LEVEL: effort } }));
+  }
   return args;
 }
 
 function claudeInput(prompt, atlasImage) {
-  const match = /^data:(image\/(?:png|webp|jpeg));base64,([A-Za-z0-9+/]+={0,2})$/i.exec(String(atlasImage || ""));
+  const match = /^data:(image\/(?:png|webp));base64,([A-Za-z0-9+/]+={0,2})$/i.exec(String(atlasImage || ""));
   if (!match) throw new Error("Claude CLI received an invalid canvas image.");
   return `${JSON.stringify({
     type: "user",
@@ -95,6 +104,10 @@ function claudeResult(stdout) {
   catch { throw new Error("Claude CLI returned invalid JSON output."); }
   const raw = records.findLast(record => record?.type === "result");
   if (!raw) throw new Error("Claude CLI returned no result event.");
+  return claudeEventResult(raw);
+}
+
+function claudeEventResult(raw) {
   if (raw?.type !== "result" || raw?.subtype !== "success") throw new Error(`Claude CLI did not complete successfully${raw?.subtype ? ` (${raw.subtype})` : ""}.`);
   if (raw.structured_output && typeof raw.structured_output === "object") return JSON.stringify(raw.structured_output);
   if (typeof raw.result !== "string" || !raw.result.trim()) throw new Error("Claude CLI returned an empty result.");
@@ -125,57 +138,162 @@ async function stopProcessTree(child) {
   if (processGroupExists(child.pid)) try { process.kill(-child.pid, "SIGKILL"); } catch {}
 }
 
+function appendTail(current, chunk) {
+  const next = current + chunk;
+  return Buffer.byteLength(next, "utf8") <= MAX_CAPTURE_BYTES ? next : Buffer.from(next, "utf8").subarray(-MAX_CAPTURE_BYTES).toString("utf8");
+}
+
+function toolUseName(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const name = toolUseName(item);
+      if (name) return name;
+    }
+    return "";
+  }
+  if (!value || typeof value !== "object") return "";
+  if (value.type === "tool_use") return String(value.name || value.tool || "unknown");
+  for (const item of Object.values(value)) {
+    const name = toolUseName(item);
+    if (name) return name;
+  }
+  return "";
+}
+
 function runProcess(launch, args, input, cwd, env, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(abortError());
     let child;
     try { child = spawn(launch.command, [...launch.prefixArgs, ...args], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false, detached: process.platform !== "win32" }); }
     catch (error) { reject(error); return; }
-    let overflow = false, aborted = false, termination = null, settled = false;
-    const terminate = () => termination ||= stopProcessTree(child), stdout = { value: "" }, stderr = { value: "" };
-    const capture = target => chunk => {
-      if (aborted || overflow) return;
-      if (Buffer.byteLength(target.value) + chunk.length > MAX_CAPTURE_BYTES) { overflow = true; void terminate(); return; }
-      target.value += chunk.toString("utf8");
+    let termination = null, settled = false, lineBuffer = "", stderr = "";
+    const events = [];
+    const terminate = () => termination ||= stopProcessTree(child);
+    const traceDiagnostic = () => JSON.stringify({ events, stderr:stderr.slice(-4000) });
+    const remember = (event, invalid = false) => {
+      const summary = invalid
+        ? { type:"invalid-json", preview:String(event).slice(0, 200) }
+        : {
+            type:String(event?.type || "unknown"),
+            ...(event?.subtype ? { subtype:String(event.subtype) } : {}),
+            ...(event?.model ? { model:String(event.model) } : {}),
+            ...(Array.isArray(event?.tools) ? { tools:event.tools.map(String).slice(0, 32) } : {}),
+            ...(Array.isArray(event?.mcp_servers) ? { mcpServers:event.mcp_servers.length } : {}),
+          };
+      events.push(summary);
+      if (events.length > 64) events.shift();
     };
-    child.stdout.on("data", capture(stdout));
-    child.stderr.on("data", capture(stderr));
-    const onAbort = () => { aborted = true; void (async () => { await terminate(); if (settled) return; settled = true; signal?.removeEventListener("abort", onAbort); reject(abortError()); })(); };
-    signal?.addEventListener("abort", onAbort, { once: true });
-    child.once("error", async error => { if (settled) return; settled = true; signal?.removeEventListener("abort", onAbort); if (termination) await termination; reject(error); });
-    child.once("close", async code => {
+    const finishEarly = content => {
       if (settled) return;
       settled = true;
       signal?.removeEventListener("abort", onAbort);
-      if (termination) await termination;
-      if (aborted || signal?.aborted) return reject(abortError());
-      if (overflow) return reject(new Error("Claude CLI produced too much output."));
-      resolve({ code, stdout: stdout.value, stderr: stderr.value });
+      const cleanupReady = terminate();
+      resolve({ code:0, content, stderr, traceDiagnostic:traceDiagnostic(), cleanupReady, deferCleanup:true });
+    };
+    const failEarly = error => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      error.traceDiagnostic ||= traceDiagnostic();
+      error.cleanupReady = terminate();
+      error.deferCleanup = true;
+      reject(error);
+    };
+    const handleLine = rawLine => {
+      const line = rawLine.replace(/\r$/, "").trim();
+      if (!line || settled) return;
+      if (Buffer.byteLength(line, "utf8") > MAX_CAPTURE_BYTES) return failEarly(new Error("Claude CLI produced an oversized JSON event."));
+      let event;
+      try { event = JSON.parse(line); }
+      catch { remember(line, true); return; }
+      remember(event);
+      if (event?.type === "system" && event?.subtype === "init") {
+        if (Array.isArray(event.tools) && event.tools.length) return failEarly(new Error(`Claude CLI exposed disabled tools: ${event.tools.map(String).join(", ")}.`));
+        if (Array.isArray(event.mcp_servers) && event.mcp_servers.length) return failEarly(new Error("Claude CLI connected MCP servers despite strict isolation."));
+      }
+      const toolName = toolUseName(event);
+      if (toolName) return failEarly(new Error(`Claude CLI attempted disabled tool use: ${toolName}.`));
+      if (event?.type !== "result") return;
+      let content;
+      try { content = claudeEventResult(event); }
+      catch (error) { return failEarly(error); }
+      if (Buffer.byteLength(content, "utf8") > MAX_CAPTURE_BYTES) return failEarly(new Error("Claude CLI final response is too large."));
+      if (signal?.aborted) return failEarly(abortError());
+      finishEarly(content);
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", chunk => {
+      if (settled) return;
+      lineBuffer += chunk;
+      let newline;
+      while ((newline = lineBuffer.indexOf("\n")) >= 0 && !settled) {
+        const line = lineBuffer.slice(0, newline);
+        lineBuffer = lineBuffer.slice(newline + 1);
+        handleLine(line);
+      }
+      if (!settled && Buffer.byteLength(lineBuffer, "utf8") > MAX_CAPTURE_BYTES) failEarly(new Error("Claude CLI produced an oversized unterminated JSON event."));
     });
-    child.stdin.on("error", error => { if (error.code !== "EPIPE") void terminate(); });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", chunk => { if (!settled) stderr = appendTail(stderr, chunk); });
+    const onAbort = () => failEarly(abortError());
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.once("error", error => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      error.traceDiagnostic ||= traceDiagnostic();
+      reject(error);
+    });
+    child.once("close", code => {
+      if (settled) return;
+      if (lineBuffer.trim()) handleLine(lineBuffer);
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      if (signal?.aborted) return reject(abortError());
+      resolve({ code, content:null, stderr, traceDiagnostic:traceDiagnostic(), cleanupReady:Promise.resolve(), deferCleanup:false });
+    });
+    child.stdin.on("error", error => { if (error.code !== "EPIPE") failEarly(error); });
     child.stdin.end(input);
   });
 }
 
 async function callClaudeCli({ executable, model, effort, systemPrompt, prompt, atlasImage, signal, env = process.env }) {
   const workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "penecho-claude-"));
-  let caughtError = null;
+  let caughtError = null, cleanupReady = Promise.resolve(), deferCleanup = false;
   try {
     await fs.promises.chmod(workDir, 0o700).catch(() => {});
     const launch = resolveClaudeLaunch(executable, env), args = buildClaudeArgs({ systemPrompt, model, effort }), input = claudeInput(prompt, atlasImage), childEnv = sanitizeClaudeEnv(env), result = await runProcess(launch, args, input, workDir, childEnv, signal);
+    cleanupReady = result.cleanupReady || cleanupReady;
+    deferCleanup = Boolean(result.deferCleanup);
     if (signal?.aborted) throw abortError();
+    if (result.content) return result.content;
     if (result.code !== 0) {
       const error = new Error(`Claude CLI failed with exit code ${result.code}.`);
       error.diagnostic = result.stderr.slice(-4000);
+      error.traceDiagnostic = result.traceDiagnostic;
       throw error;
     }
-    const content = claudeResult(result.stdout);
-    if (signal?.aborted) throw abortError();
-    return content;
-  } catch (error) { caughtError = error; throw error; }
+    const error = new Error("Claude CLI returned no result event.");
+    error.traceDiagnostic = result.traceDiagnostic;
+    throw error;
+  } catch (error) {
+    caughtError = error;
+    cleanupReady = error.cleanupReady || cleanupReady;
+    deferCleanup = deferCleanup || Boolean(error.deferCleanup);
+    throw error;
+  }
   finally {
-    try { await fs.promises.rm(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
-    catch (cleanupError) { if (caughtError) caughtError.cleanupDiagnostic = cleanupError.message; else throw new Error(`Claude CLI temporary directory cleanup failed: ${cleanupError.message}`); }
+    const cleanup = async () => {
+      await cleanupReady.catch(() => {});
+      await fs.promises.rm(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    };
+    if (deferCleanup) {
+      void cleanup().catch(() => {});
+    } else {
+      try { await cleanup(); }
+      catch (cleanupError) { if (caughtError) caughtError.cleanupDiagnostic = cleanupError.message; else throw new Error(`Claude CLI temporary directory cleanup failed: ${cleanupError.message}`); }
+    }
   }
 }
 

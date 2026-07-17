@@ -21,7 +21,7 @@ Put a question, equation, diagram, or half-formed idea anywhere on the canvas an
 - Choose Arcane, Sci-fi, or Research mode to match the kind of problem you are exploring.
 - Save lightweight snapshots locally in your browser. Starting a new canvas can overwrite the current snapshot, save a new copy, or continue without saving; unconfirmed AI drafts are never included.
 
-PenEcho has no npm runtime dependencies. It only allocates `512 x 512` tiles where ink exists, so the huge logical canvas does not become a huge bitmap.
+PenEcho keeps a small local runtime and only allocates `512 x 512` tiles where ink exists, so the huge logical canvas does not become a huge bitmap.
 
 ## How it works
 
@@ -48,22 +48,33 @@ You need [Node.js 18.17+](https://nodejs.org/) and one of the following: an API 
 
 ```bash
 npm install -g penecho
+penecho configure
+penecho
 ```
 
-### Option 1: OpenAI or Claude API
+`penecho configure` opens the interactive configuration center. Its main menu contains `LLM source`, `Settings`, and `Exit`. Use the arrow keys and Enter to navigate:
+
+- `LLM source -> Claude CLI` selects a detected, recommended, default, or manually entered model and an effort level. Opus 4.8 or newer is recommended; Sonnet and Opus 4.6 can respond but may produce weaker canvas results.
+- `LLM source -> Codex CLI` selects a model and effort. GPT-5.5 or newer is required for good results, `gpt-5.6-sol` is recommended, and `xhigh` is the highest listed Codex effort.
+- `LLM source -> API` selects the OpenAI-compatible or Anthropic/Claude-compatible request format, then asks for the URL, model, effort, and hidden key. Existing values are offered as defaults and a blank key keeps the saved key.
+- `Settings` controls the unified model timeout, the image format sent to every model executor, request recording and retention, listening interface and port, and initial Auto AI delay. WebP is the default; PNG is also available. The delay can also be changed on the canvas.
+
+Every LLM page ends with `Test & Save`, and PenEcho always saves before checking. Codex CLI uses a fast offline check: it verifies the executable and login, then reads `codex debug models --bundled` to confirm the selected model exists. It does not run inference, attach an image, refresh the online catalog, or consume model tokens. Claude CLI and API configuration still send one small real request to verify the selected endpoint/model settings. Whether a check passes or fails, the configuration remains saved and the UI returns to the parent menu with a clear diagnostic.
+
+The default configuration is `~/.penecho/config.env`. API credentials are plaintext in this local file, receive owner-only permissions on POSIX systems, and are never sent to browser code. Protect it like any other credential. If `penecho` is started before this file exists, it opens the configuration center automatically in an interactive terminal.
+
+Use a different env-style configuration file for a particular launch when needed:
 
 ```bash
-penecho doctor --api
-penecho --api
+penecho configure --config ./team.env
+penecho --config ./team.env
 ```
 
-The doctor first asks for the API format: `openai` (the default) or `anthropic`. It then guides you through the URL, model, reasoning effort, and hidden API-key prompt. Configuration is stored locally in `~/.penecho/config.env`; the key is plaintext, receives owner-only permissions on POSIX systems, and is never sent to browser code. Protect this file like any other local credential.
+An explicit `--config` file replaces the default global file for that command. PenEcho does not automatically read a project-directory `.env` or a package-directory `.env`.
 
-The same neutral fields work for both providers: `AI_API_FORMAT`, `AI_API_URL`, `AI_API_MODEL`, and `AI_API_KEY`. OpenAI-compatible local services also use `AI_API_FORMAT=openai`. Known `AI_EFFORT` values are `low`, `medium`, `high`, `xhigh`, and `max`; other strings are accepted and passed through for model-specific or future levels. API mode uses `max` when it is omitted. OpenAI-format requests use `reasoning_effort`, while Anthropic requests use `output_config.effort`. If a model rejects a value, PenEcho shows the upstream API or CLI diagnostic. A [Claude subscription and Claude API billing are separate](https://support.claude.com/en/articles/9876003-i-have-a-paid-claude-subscription-pro-max-team-or-enterprise-plans-why-do-i-have-to-pay-separately-to-use-the-claude-api-and-console), so choose Claude CLI mode below if you want to use your existing Claude Code login rather than an Anthropic API key.
+### CLI prerequisites
 
-### Option 2: Codex on your machine
-
-Install the Codex CLI separately before using this mode. Installing the Codex desktop app alone does not guarantee that a `codex` executable is available on your shell `PATH` for PenEcho to call. Install the latest CLI globally with npm:
+Installing the Codex desktop app alone does not guarantee that a `codex` executable is available on the shell `PATH`. Install and authenticate the CLI separately before selecting Codex:
 
 ```bash
 npm install -g @openai/codex@latest
@@ -72,69 +83,37 @@ codex --version
 codex login status
 ```
 
-If you are not signed in yet, run `codex login`. Then verify and start PenEcho:
+If needed, run `codex login`. Claude CLI mode similarly requires an installed and authenticated Claude Code CLI, normally through `claude auth login`.
+
+PenEcho uses the selected CLI locally and does not need an API key for that source. Normal startup checks the executable and login without consuming model tokens. Codex `Test & Save` additionally verifies the selected model against the installed CLI's bundled catalog without making a model request; Claude `Test & Save` sends a small real request.
+
+Canvas requests through Codex use `codex exec --json`. PenEcho returns as soon as Codex emits the final agent message and `turn.completed`; if the CLI process remains alive afterward, it is terminated and cleaned up in the background instead of delaying the canvas response.
+
+Claude CLI requests use one isolated `claude -p` turn with tools, agents, MCP, prompt suggestions, session persistence, and other nonessential background traffic disabled. PenEcho sets `MAX_THINKING_TOKENS=0` for these latency-sensitive canvas turns so Claude Code does not spend a large hidden extended-thinking budget. When an effort is selected, PenEcho applies both Claude's `--effort` flag and a per-process settings override so a user-level `CLAUDE_CODE_EFFORT_LEVEL` cannot silently replace it. PenEcho incrementally validates the stream and returns as soon as Claude emits its successful final `result`; any attempted tool use aborts the request, while a CLI process that remains alive after the result is terminated and cleaned up in the background.
+
+Transient launch overrides remain available:
 
 ```bash
 penecho doctor --codex
-penecho --codex
-
-# Optional one-run overrides
-penecho --codex --model gpt-5.6-sol --effort low
+penecho --codex --model gpt-5.6-sol --effort xhigh
+penecho --claude --model opus --effort max
+penecho --port 4000
 ```
 
-This runs `codex exec` locally for each canvas request. It uses your authenticated Codex CLI directly and does not require an API key. Startup checks the CLI version and login state without calling a model or consuming tokens. It is a local execution path through Codex, not a local model.
-
-`--model` accepts any model ID understood by the installed Codex CLI, and `--effort` accepts known values such as `low`, `medium`, `high`, `xhigh`, or `max`, as well as other model-specific strings. These flags apply only to the current PenEcho process and override `CODEX_CLI_MODEL` and `AI_EFFORT` from configuration. If a flag is omitted, the corresponding environment setting is used; if that is also empty, Codex selects the default model or effort for PenEcho's isolated CLI session. PenEcho intentionally excludes the user's Codex configuration from model requests, so an unset `CODEX_CLI_MODEL` does not inherit `model` from `~/.codex/config.toml`.
-
-`CODEX_CLI_TIMEOUT_SECONDS` defaults to 120 seconds per model attempt.
-
-### Option 3: Claude on your machine
-
-```bash
-# Install Claude Code and sign in once if needed.
-# claude auth login
-penecho doctor --claude
-penecho --claude
-
-# Optional one-run overrides
-penecho --claude --model sonnet --effort low
-```
-
-This runs `claude -p` locally for each canvas request, using the Claude Code login already available on the machine. It does not need `AI_API_URL` or `AI_API_KEY`. The startup check only verifies the CLI version and authentication state; it does not call a model.
-
-`--model` accepts an alias such as `sonnet`, `opus`, or `haiku`, or a full model ID accepted by the installed Claude CLI. `--effort` accepts known values and other strings supported by that CLI. These flags apply only to the current PenEcho process and override `CLAUDE_CLI_MODEL` and `AI_EFFORT` from configuration. If a flag and its environment setting are both omitted, Claude keeps its own default. See the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-usage) for accepted model forms.
-
-`CLAUDE_CLI_TIMEOUT_SECONDS` defaults to 120 seconds per model attempt.
-
-Choose another port when needed:
-
-```bash
-penecho --codex --port 4000
-```
+`--model`, `--effort`, and `--port` apply only to that process and take precedence over the selected configuration file. Omit them to use the saved choice or the underlying CLI default. Other model-specific effort strings are accepted and passed through.
 
 ### Run from this source directory
 
-No separate build step is required. Copy one ready profile to `.env`, then run:
-
-```bash
-# API: replace AI_API_KEY after copying
-cp .env.api .env
-
-# Or use the Codex CLI already logged in on this machine
-cp .env.codex .env
-
-# Or use the Claude CLI already logged in on this machine
-cp .env.claude .env
-```
-
-On Windows PowerShell, use `Copy-Item .env.api .env` (or the corresponding Codex/Claude filename).
+Install dependencies, expose this checkout's `penecho` executable through npm, configure it, and start it through the same production entry point:
 
 ```bash
 npm install
-npm start
+npm link
+penecho configure
+penecho
 ```
 
-`npm start` reads the `.env` file in this source directory directly. Model and effort settings there are effective: use `CODEX_CLI_MODEL` plus `AI_EFFORT` with `AI_PROVIDER=codex-cli`, or `CLAUDE_CLI_MODEL` plus `AI_EFFORT` with `AI_PROVIDER=claude-cli`. Empty model or effort values leave that choice to the selected CLI. Restart `npm start` after editing `.env`. The `--model` and `--effort` command-line options belong to the installed `penecho` command; configure `.env` instead when starting with npm.
+`npm link` creates the local command link; it does not publish the package. There is no separate build step and local development does not use `npm start`.
 
 Open [http://localhost:3888](http://localhost:3888). Other devices on the same trusted LAN can use `http://<this-computer-LAN-IP>:3888`.
 
@@ -159,13 +138,13 @@ PenEcho supports model selection independently for API, Codex CLI, and Claude CL
 PenEcho listens on `0.0.0.0:3888` by default so localhost and trusted-LAN access work immediately. Choose the deployment boundary that matches your executor:
 
 - **Codex CLI and Claude CLI modes:** use them only on the local machine or a trusted, directly connected LAN. A valid request starts a local CLI process, so do not expose either mode directly to the public internet or an untrusted reverse proxy. Both work immediately from localhost and LAN addresses without a public-origin setting. PenEcho checks the Host, client network, exact Origin, process-lifetime session cookie, and JSON content type before launching the selected CLI. Each valid new request immediately supersedes the prior request; it never waits in a queue or returns a busy response.
-- **API mode:** local, LAN, proxy, and remote requests are intentionally accepted without PenEcho-level Host or Origin restrictions. If you expose it publicly, place it behind HTTPS, authentication, rate limiting, and request-size controls. Keep `.env` and provider keys private; credentials remain in the Node.js process and are never sent to browser code.
+- **API mode:** local, LAN, proxy, and remote requests are intentionally accepted without PenEcho-level Host or Origin restrictions. If you expose it publicly, place it behind HTTPS, authentication, rate limiting, and request-size controls. Keep the selected configuration file and provider keys private; credentials remain in the Node.js process and are never sent to browser code.
 
-For either mode, keep debug artifacts and request tracing disabled in production unless you are actively diagnosing a problem, and never publish `.env`, logs, screenshots, or saved requests containing private content. `PENECHO_REQUEST_TRACE=true` stores each valid AI request under `logs/requests` (or the configured state directory), including the source `atlas.png`, the configured outbound WebP/JPEG artifact when encoding succeeds, MIME types and byte sizes, the outbound model request with credentials redacted, every raw and parsed model response, any PNG format fallback, and the final success, cancellation, timeout, or error state. `PENECHO_REQUEST_TRACE_LIMIT` controls retention and defaults to 100.
+For either mode, keep debug artifacts and request tracing disabled in production unless you are actively diagnosing a problem, and never publish configuration files, logs, screenshots, or saved requests containing private content. When request recording is enabled in `Settings`, each valid AI request is stored under `~/.penecho/logs/requests` by default, including the source `atlas.png`, the outbound image, credential-redacted request body, raw and parsed responses, fallback details, and final status. The UI also displays this path and configures retention.
 
 ## Useful configuration
 
-`.env.example` is the complete annotated reference. `.env.api`, `.env.codex`, and `.env.claude` are the short ready-to-copy profiles. These settings cover most custom setups:
+The configuration center writes these settings to `~/.penecho/config.env`, or to the file selected with `--config`:
 
 | Setting | Purpose |
 | --- | --- |
@@ -174,15 +153,16 @@ For either mode, keep debug artifacts and request tracing disabled in production
 | `AI_API_URL` / `AI_API_KEY` | API endpoint and credential; used only in API mode |
 | `AI_API_MODEL` | Model used in API mode |
 | `AI_EFFORT` | Global reasoning effort; known values are `low`, `medium`, `high`, `xhigh`, and `max`, other strings pass through; API defaults to `max`, while an empty CLI value preserves the CLI default |
-| `PENECHO_AI_IMAGE_FORMAT` | Image format sent to the model: `webp` (default), `png`, or `jpeg`; `jpg` is accepted as an alias |
+| `AI_TIMEOUT_SECONDS` | Unified timeout for API, Codex CLI, and Claude CLI model attempts; default 180, allowed range 10–600 |
+| `PENECHO_AI_IMAGE_FORMAT` | Image format sent to API, Codex CLI, and Claude CLI: `webp` (default) or `png` |
 | `CODEX_CLI_MODEL` | Optional model override for Codex CLI mode |
 | `CLAUDE_CLI_MODEL` | Optional alias or model-ID override for Claude CLI mode |
 | `AUTO_AI_DELAY_SECONDS` | Initial delay before automatic recognition; the browser control can override it from 0 to 10 seconds |
 | `PENECHO_REQUEST_TRACE` | Save local per-request image, outbound request, response, and outcome traces; disabled by default |
 | `PENECHO_REQUEST_TRACE_LIMIT` | Number of local request traces retained, default 100 and maximum 1000 |
-| `HOST` / `PORT` | Server address and port, default `0.0.0.0:3888` |
+| `HOST` / `PORT` | Listening interface and port, default `0.0.0.0:3888` |
 
-For installed CLI starts, `--model` overrides the selected executor's model setting and `--effort` overrides `AI_EFFORT` for that process only. Command-line options take precedence over environment files.
+For installed CLI starts, `--model` overrides the selected executor's model setting and `--effort` overrides `AI_EFFORT` for that process only. Command-line options and process environment variables take precedence over the selected configuration file.
 
 Run the checks before submitting a change:
 

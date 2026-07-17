@@ -71,7 +71,7 @@ function buildCodexArgs({ workDir, imageFile, outputFile, model, effort }) {
       "goals", "hooks", "image_generation", "in_app_browser", "memories", "multi_agent", "network_proxy", "plugins", "remote_plugin",
       "request_permissions_tool", "shell_snapshot", "shell_tool", "skill_mcp_dependency_install", "tool_call_mcp_elicitation", "tool_suggest", "unified_exec", "workspace_dependencies",
     ],
-    args = ["exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--strict-config", "--color", "never"];
+    args = ["exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--strict-config", "--json", "--color", "never"];
   for (const feature of disabledFeatures) args.push("--disable", feature);
   args.push(
     "-c", 'approval_policy="never"',
@@ -121,8 +121,10 @@ async function prepareIsolatedRuntime(workDir, env = process.env) {
   return sanitizeCodexEnv(env, { homeDir, codexHome, appData, localAppData, xdgConfigHome, xdgCacheHome });
 }
 
-function abortError() {
-  return Object.assign(new Error("Codex CLI request aborted."), { name: "AbortError" });
+function abortError(traceDiagnostic = "") {
+  const error = Object.assign(new Error("Codex CLI request aborted."), { name: "AbortError" });
+  if (traceDiagnostic) error.traceDiagnostic = traceDiagnostic;
+  return error;
 }
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -160,7 +162,28 @@ async function stopProcessTree(child) {
   }
 }
 
-function runProcess(launch, args, prompt, cwd, env, signal) {
+function appendTail(current, value, limit = MAX_CAPTURE_BYTES) {
+  const combined = `${current}${value}`;
+  const buffer = Buffer.from(combined, "utf8");
+  return buffer.length <= limit ? combined : buffer.subarray(buffer.length - limit).toString("utf8").replace(/^\uFFFD/, "");
+}
+
+function codexAgentMessage(event) {
+  if (event?.type !== "item.completed") return "";
+  const item = event.item, type = String(item?.type || "").toLowerCase();
+  if (!["agent_message", "assistant_message", "message"].includes(type)) return "";
+  if (typeof item.text === "string") return item.text;
+  if (typeof item.content === "string") return item.content;
+  if (!Array.isArray(item.content)) return "";
+  return item.content.map(part => typeof part === "string" ? part : part?.text || part?.output_text || "").join("");
+}
+
+function codexEventError(event) {
+  const value = event?.error?.message || event?.error || event?.message || event?.detail;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function runJsonProcess(launch, args, prompt, cwd, env, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(abortError());
     let child;
@@ -169,69 +192,125 @@ function runProcess(launch, args, prompt, cwd, env, signal) {
     } catch (error) {
       return reject(error);
     }
-    let overflow = false, aborted = false, termination = null, settled = false;
+    let termination = null, settled = false, lineBuffer = "", stderr = "", finalContent = "";
+    const events = [];
     const terminate = () => termination ||= stopProcessTree(child);
-    const capture = (target) => (chunk) => {
-      if (aborted || overflow) return;
-      if (Buffer.byteLength(target.value) + chunk.length > MAX_CAPTURE_BYTES) {
-        overflow = true;
-        void terminate();
-        return;
-      }
-      target.value += chunk.toString("utf8");
+    const traceDiagnostic = () => JSON.stringify({ events, stderr:stderr.slice(-4000) });
+    const remember = (event, invalid = false) => {
+      const summary = invalid
+        ? { type:"invalid-json", preview:String(event).slice(0, 200) }
+        : { type:String(event?.type || "unknown"), ...(event?.item?.type ? { itemType:String(event.item.type) } : {}), ...(codexEventError(event) ? { error:codexEventError(event).slice(0, 500) } : {}) };
+      events.push(summary);
+      if (events.length > 64) events.shift();
     };
-    const stdoutTarget = { value: "" }, stderrTarget = { value: "" };
-    child.stdout.on("data", capture(stdoutTarget));
-    child.stderr.on("data", capture(stderrTarget));
+    const finishEarly = (content) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      const cleanupReady = terminate();
+      resolve({ code:0, content, stderr, traceDiagnostic:traceDiagnostic(), cleanupReady, deferCleanup:true });
+    };
+    const failEarly = (error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      error.traceDiagnostic ||= traceDiagnostic();
+      error.cleanupReady = terminate();
+      error.deferCleanup = true;
+      reject(error);
+    };
+    const handleLine = (rawLine) => {
+      const line = rawLine.replace(/\r$/, "").trim();
+      if (!line || settled) return;
+      if (Buffer.byteLength(line, "utf8") > MAX_CAPTURE_BYTES) return failEarly(new Error("Codex CLI produced an oversized JSON event."));
+      let event;
+      try { event = JSON.parse(line); }
+      catch { remember(line, true); return; }
+      remember(event);
+      const content = codexAgentMessage(event);
+      if (content) {
+        if (Buffer.byteLength(content, "utf8") > MAX_CAPTURE_BYTES) return failEarly(new Error("Codex CLI final response is too large."));
+        finalContent = content;
+      }
+      if (event?.type === "turn.completed") {
+        if (signal?.aborted) return failEarly(abortError(traceDiagnostic()));
+        if (!finalContent) return failEarly(new Error("Codex CLI completed the turn without a final agent message."));
+        finishEarly(finalContent);
+      } else if (event?.type === "turn.failed" || event?.type === "error") {
+        const detail = codexEventError(event), error = new Error(`Codex CLI turn failed${detail ? `: ${detail}` : "."}`);
+        if (detail) error.diagnostic = detail.slice(0, 4000);
+        failEarly(error);
+      }
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", chunk => {
+      if (settled) return;
+      lineBuffer += chunk;
+      let newline;
+      while ((newline = lineBuffer.indexOf("\n")) >= 0 && !settled) {
+        const line = lineBuffer.slice(0, newline);
+        lineBuffer = lineBuffer.slice(newline + 1);
+        handleLine(line);
+      }
+      if (!settled && Buffer.byteLength(lineBuffer, "utf8") > MAX_CAPTURE_BYTES) failEarly(new Error("Codex CLI produced an oversized unterminated JSON event."));
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", chunk => { if (!settled) stderr = appendTail(stderr, chunk); });
     const onAbort = () => {
-      aborted = true;
-      void (async()=>{await terminate();if(settled)return;settled=true;signal?.removeEventListener("abort",onAbort);reject(abortError())})();
+      if (settled) return;
+      const error = abortError(traceDiagnostic());
+      failEarly(error);
     };
     signal?.addEventListener("abort", onAbort, { once: true });
-    child.on("error", async (error) => {
+    child.on("error", (error) => {
       if (settled) return;
       settled = true;
       signal?.removeEventListener("abort", onAbort);
-      if (termination) await termination;
+      error.traceDiagnostic ||= traceDiagnostic();
       reject(error);
     });
-    child.on("close", async (code) => {
+    child.on("close", (code) => {
+      if (settled) return;
+      if (lineBuffer.trim()) handleLine(lineBuffer);
       if (settled) return;
       settled = true;
       signal?.removeEventListener("abort", onAbort);
-      if (termination) await termination;
-      if (aborted || signal?.aborted) return reject(abortError());
-      if (overflow) return reject(new Error("Codex CLI produced too much diagnostic output."));
-      resolve({ code, stdout: stdoutTarget.value, stderr: stderrTarget.value });
+      if (signal?.aborted) return reject(abortError(traceDiagnostic()));
+      resolve({ code, content:finalContent || null, stderr, traceDiagnostic:traceDiagnostic(), cleanupReady:Promise.resolve(), deferCleanup:false });
     });
     child.stdin.on("error", (error) => {
-      if (error.code !== "EPIPE") void terminate();
+      if (error.code !== "EPIPE") failEarly(error);
     });
     child.stdin.end(prompt);
   });
 }
 
 function decodeAtlasImage(dataUrl) {
-  const match = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(String(dataUrl || ""));
-  if (!match) throw new Error("Codex CLI received an invalid PNG image.");
-  return Buffer.from(match[1], "base64");
+  const match = /^data:image\/(png|webp);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(String(dataUrl || ""));
+  if (!match) throw new Error("Codex CLI received an invalid PNG or WebP image.");
+  const format = match[1].toLowerCase();
+  return { buffer:Buffer.from(match[2], "base64"), extension:format, mimeType:`image/${format}` };
 }
 
 async function callCodexCli({ executable, model, effort, prompt, atlasImage, signal, env = process.env }) {
   const workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "penecho-codex-"));
-  const imageFile = path.join(workDir, "atlas.png"), outputFile = path.join(workDir, "last-message.txt");
-  let caughtError = null;
+  const image = decodeAtlasImage(atlasImage), imageFile = path.join(workDir, `atlas.${image.extension}`), outputFile = path.join(workDir, "last-message.txt");
+  let caughtError = null, cleanupReady = Promise.resolve(), deferCleanup = false;
   try {
     await fs.promises.chmod(workDir, 0o700).catch(() => {});
-    await fs.promises.writeFile(imageFile, decodeAtlasImage(atlasImage), { mode: 0o600 });
+    await fs.promises.writeFile(imageFile, image.buffer, { mode: 0o600 });
     const launch = resolveCodexLaunch(executable, env),
       args = buildCodexArgs({ workDir, imageFile, outputFile, model, effort }),
       childEnv = await prepareIsolatedRuntime(workDir, env),
-      result = await runProcess(launch, args, prompt, workDir, childEnv, signal);
+      result = await runJsonProcess(launch, args, prompt, workDir, childEnv, signal);
+    cleanupReady = result.cleanupReady || cleanupReady;
+    deferCleanup = Boolean(result.deferCleanup);
     if (signal?.aborted) throw abortError();
+    if (result.content) return result.content;
     if (result.code !== 0) {
       const error = new Error(`Codex CLI failed with exit code ${result.code}.`);
       error.diagnostic = result.stderr.slice(-4000);
+      error.traceDiagnostic = result.traceDiagnostic;
       throw error;
     }
     const stat = await fs.promises.stat(outputFile).catch(() => null);
@@ -243,13 +322,27 @@ async function callCodexCli({ executable, model, effort, prompt, atlasImage, sig
     return content;
   } catch (error) {
     caughtError = error;
+    cleanupReady = error.cleanupReady || cleanupReady;
+    deferCleanup = deferCleanup || Boolean(error.deferCleanup);
+    const stat = await fs.promises.stat(outputFile).catch(() => null);
+    if (stat?.isFile() && stat.size > 0 && stat.size <= MAX_CAPTURE_BYTES) {
+      const lastMessage = await fs.promises.readFile(outputFile, "utf8").catch(() => "");
+      if (lastMessage) error.traceDiagnostic = `${error.traceDiagnostic || ""}\nlast-message.txt:\n${lastMessage}`.trim();
+    }
     throw error;
   } finally {
-    try {
+    const cleanup = async () => {
+      await cleanupReady.catch(() => {});
       await fs.promises.rm(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    } catch (cleanupError) {
-      if (caughtError) caughtError.cleanupDiagnostic = cleanupError.message;
-      else throw new Error(`Codex CLI temporary directory cleanup failed: ${cleanupError.message}`);
+    };
+    if (deferCleanup) {
+      void cleanup().catch(() => {});
+    } else {
+      try { await cleanup(); }
+      catch (cleanupError) {
+        if (caughtError) caughtError.cleanupDiagnostic = cleanupError.message;
+        else throw new Error(`Codex CLI temporary directory cleanup failed: ${cleanupError.message}`);
+      }
     }
   }
 }

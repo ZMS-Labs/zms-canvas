@@ -1,23 +1,27 @@
 {
   "name": "penecho",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Think with AI on a shared canvas for handwriting, equations, and diagrams",
   "license": "AGPL-3.0-only",
-  "keywords": ["canvas", "handwriting", "ai", "whiteboard", "math"],
+  "keywords": [
+    "canvas",
+    "handwriting",
+    "ai",
+    "whiteboard",
+    "math"
+  ],
   "bin": {
     "penecho": "cli.js"
   },
   "files": [
     "cli.js",
     "server.js",
+    "api-config.js",
+    "configure-ui.js",
     "codex-cli.js",
     "claude-cli.js",
     "public/",
     "docs/architecture.md",
-    ".env.example",
-    ".env.api",
-    ".env.codex",
-    ".env.claude",
     "README.md",
     "CONTRIBUTING.md",
     "CONTRIBUTOR-LICENSE-AGREEMENT.md",
@@ -35,12 +39,14 @@
     "url": "https://github.com/erickong/penecho/issues"
   },
   "scripts": {
-    "start": "node server.js",
-    "check": "node --check cli.js && node --check server.js && node --check codex-cli.js && node --check claude-cli.js && node --check public/draw.js && node --check public/selection.js && node --check public/app.js && node --test",
+    "check": "node --check cli.js && node --check server.js && node --check api-config.js && node --check configure-ui.js && node --check codex-cli.js && node --check claude-cli.js && node --check public/draw.js && node --check public/selection.js && node --check public/app.js && node --test",
     "test": "node --test"
   },
-  "engines": { "node": ">=18.17.0" },
+  "engines": {
+    "node": ">=18.17.0"
+  },
   "dependencies": {
+    "@inquirer/prompts": "7.10.1",
     "sharp": "^0.34.5"
   }
 }

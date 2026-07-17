@@ -9,6 +9,7 @@ const path = require("node:path");
 const { buildClaudeArgs, callClaudeCli, claudeInput, claudeResult, sanitizeClaudeEnv } = require("../claude-cli.js");
 
 const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const WEBP = "data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA4AAAAvAAAAAAcQEf0PRET/Aw==";
 
 function temporaryDirectory() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "penecho-claude-test-"));
@@ -16,20 +17,30 @@ function temporaryDirectory() {
   return directory;
 }
 
+async function waitForMissing(file, timeout = 5000) {
+  const deadline = Date.now() + timeout;
+  while (fs.existsSync(file) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+}
+
 test("Claude CLI arguments select one non-interactive image-analysis turn", () => {
   const args = buildClaudeArgs({ systemPrompt:"system instructions", model:"sonnet", effort:"max" });
   assert.deepEqual(args.slice(0, 5), ["-p", "--input-format", "stream-json", "--output-format", "stream-json"]);
   assert.ok(args.includes("--verbose"));
   assert.equal(args[args.indexOf("--tools") + 1], "");
+  assert.equal(args[args.indexOf("--disallowedTools") + 1], "Agent,Task");
+  assert.equal(args[args.indexOf("--agents") + 1], "{}");
+  assert.equal(args[args.indexOf("--prompt-suggestions") + 1], "false");
   assert.equal(args[args.indexOf("--system-prompt") + 1], "system instructions");
   assert.equal(args[args.indexOf("--model") + 1], "sonnet");
   assert.equal(args[args.indexOf("--effort") + 1], "max");
+  assert.deepEqual(JSON.parse(args[args.indexOf("--settings") + 1]), { env:{ CLAUDE_CODE_EFFORT_LEVEL:"max" } });
   for (const flag of ["--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--strict-mcp-config", "--no-chrome"]) assert.ok(args.includes(flag));
 });
 
 test("leaves Claude effort unset when the global value is empty", () => {
   const args = buildClaudeArgs({ systemPrompt:"system instructions", model:null, effort:null });
   assert.equal(args.includes("--effort"), false);
+  assert.equal(args.includes("--settings"), false);
 });
 
 test("Claude CLI input carries text and the canvas image in one streaming user message", () => {
@@ -40,13 +51,22 @@ test("Claude CLI input carries text and the canvas image in one streaming user m
   assert.match(payload.message.content[1].source.data, /^[A-Za-z0-9+/]+=*$/);
 });
 
-test("Claude CLI child environment keeps login context but removes API credentials", () => {
-  const clean = sanitizeClaudeEnv({ PATH:"bin", HOME:"home", CLAUDE_CODE_OAUTH_TOKEN:"login-token", AI_API_KEY:"secret", OPENAI_API_KEY:"legacy-secret", ANTHROPIC_API_KEY:"anthropic-secret", UNRELATED_SECRET:"private" });
+test("Claude CLI input preserves a configured WebP image and MIME type", () => {
+  const payload = JSON.parse(claudeInput("request metadata", WEBP));
+  assert.equal(payload.message.content[1].source.media_type, "image/webp");
+  assert.equal(Buffer.from(payload.message.content[1].source.data, "base64").toString("ascii", 0, 4), "RIFF");
+});
+
+test("Claude CLI child environment keeps login context, disables extended thinking, and removes API credentials", () => {
+  const clean = sanitizeClaudeEnv({ PATH:"bin", HOME:"home", CLAUDE_CODE_OAUTH_TOKEN:"login-token", MAX_THINKING_TOKENS:"9000", AI_API_KEY:"secret", OPENAI_API_KEY:"legacy-secret", ANTHROPIC_API_KEY:"anthropic-secret", UNRELATED_SECRET:"private" });
   assert.equal(clean.PATH, "bin");
   assert.equal(clean.HOME, "home");
   assert.equal(clean.CLAUDE_CODE_OAUTH_TOKEN, "login-token");
   for (const name of ["AI_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "UNRELATED_SECRET"]) assert.equal(clean[name], undefined);
   assert.equal(clean.CLAUDE_CODE_SKIP_PROMPT_HISTORY, "1");
+  assert.equal(clean.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
+  assert.equal(clean.CLAUDE_CODE_DISABLE_TERMINAL_TITLE, "1");
+  assert.equal(clean.MAX_THINKING_TOKENS, "0");
 });
 
 test("Claude CLI JSON result parsing accepts text and structured output", () => {
@@ -69,6 +89,26 @@ test("Claude CLI adapter sends the image, system prompt, model, and no API key",
   assert.equal(saved.args[saved.args.indexOf("--model") + 1], "sonnet");
 });
 
+test("Claude CLI returns on the final result event without waiting for process exit", { timeout:10000 }, async () => {
+  const directory = temporaryDirectory(), fakeCli = path.join(directory, "fake-claude.js"), marker = path.join(directory, "started.txt");
+  fs.writeFileSync(fakeCli, `"use strict";const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(marker)},process.cwd());const result={intent:"answer",observedText:"image",message:"early",commands:[]};process.stdout.write(JSON.stringify({type:"system",subtype:"init",tools:[],mcp_servers:[],model:"sonnet"})+"\\n");process.stdout.write(JSON.stringify({type:"result",subtype:"success",result:JSON.stringify(result)})+"\\n");setInterval(()=>{},1000);\n`);
+  const started = Date.now(), content = await callClaudeCli({ executable:fakeCli, model:"sonnet", systemPrompt:"system", prompt:"request", atlasImage:PNG });
+  assert.equal(JSON.parse(content).message, "early");
+  assert.ok(Date.now() - started < 3000);
+  const workDir = fs.readFileSync(marker, "utf8");
+  await waitForMissing(workDir);
+  assert.equal(fs.existsSync(workDir), false);
+});
+
+test("Claude CLI rejects and stops any tool-use event", { timeout:10000 }, async () => {
+  const directory = temporaryDirectory(), fakeCli = path.join(directory, "fake-claude.js"), marker = path.join(directory, "started.txt");
+  fs.writeFileSync(fakeCli, `"use strict";const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(marker)},process.cwd());process.stdout.write(JSON.stringify({type:"assistant",message:{content:[{type:"tool_use",name:"Agent",input:{}}]}})+"\\n");setInterval(()=>{},1000);\n`);
+  await assert.rejects(callClaudeCli({ executable:fakeCli, model:"sonnet", systemPrompt:"system", prompt:"request", atlasImage:PNG }), error => /disabled tool use: Agent/.test(error?.message) && /assistant/.test(error?.traceDiagnostic || ""));
+  const workDir = fs.readFileSync(marker, "utf8");
+  await waitForMissing(workDir);
+  assert.equal(fs.existsSync(workDir), false);
+});
+
 test("Claude CLI abort stops the process and discards its output", async () => {
   const directory = temporaryDirectory(), fakeCli = path.join(directory, "fake-claude.js"), marker = path.join(directory, "started.txt");
   fs.writeFileSync(fakeCli, `"use strict";const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(marker)},process.cwd());process.stdout.write('{"type":"result","subtype":"success","result":"');setInterval(()=>process.stdout.write('stale'),10);\n`);
@@ -79,5 +119,6 @@ test("Claude CLI abort stops the process and discards its output", async () => {
   const workDir = fs.readFileSync(marker, "utf8");
   controller.abort();
   await assert.rejects(request, error => error?.name === "AbortError");
+  await waitForMissing(workDir);
   assert.equal(fs.existsSync(workDir), false);
 });

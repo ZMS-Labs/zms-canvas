@@ -8,6 +8,7 @@ const path = require("node:path");
 const { buildCodexArgs, callCodexCli, prepareIsolatedRuntime, sanitizeCodexEnv } = require("../codex-cli.js");
 
 const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const WEBP = "data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA4AAAAvAAAAAAcQEf0PRET/Aw==";
 
 function testCodexEnv(directory, overrides = {}) {
   const codexHome = path.join(directory, "source-codex-home");
@@ -31,6 +32,7 @@ test("builds a non-interactive read-only Codex invocation", () => {
   assert.ok(args.includes("answer.txt"));
   assert.ok(args.includes("test-model"));
   assert.ok(args.includes('model_reasoning_effort="max"'));
+  assert.ok(args.includes("--json"));
   assert.equal(args.includes("--oss"), false);
   assert.equal(args.includes("--local-provider"), false);
 });
@@ -99,11 +101,59 @@ process.stdin.on("end", () => {
   }
 });
 
-test("aborts the CLI process and removes its temporary directory", async () => {
+test("writes configured WebP input with the matching extension for Codex", async () => {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "penecho-codex-webp-test-"));
+  const fakeCli = path.join(directory, "fake-codex.js"), record = path.join(directory, "record.json");
+  await fs.promises.writeFile(fakeCli, `
+const fs = require("fs");
+const path = require("path");
+const output = process.argv[process.argv.indexOf("-o") + 1];
+const image = process.argv[process.argv.indexOf("-i") + 1];
+fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ extension:path.extname(image), signature:fs.readFileSync(image).toString("ascii", 0, 4) }));
+fs.writeFileSync(output, '{"intent":"none","commands":[]}');
+`);
+  try {
+    await callCodexCli({ executable:fakeCli, prompt:"webp", atlasImage:WEBP, env:testCodexEnv(directory) });
+    const saved = JSON.parse(await fs.promises.readFile(record, "utf8"));
+    assert.equal(saved.extension, ".webp");
+    assert.equal(saved.signature, "RIFF");
+  } finally {
+    await fs.promises.rm(directory, { recursive:true, force:true });
+  }
+});
+
+test("returns the final JSON event without waiting for the Codex process to exit", async () => {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "penecho-codex-stream-test-"));
+  const fakeCli = path.join(directory, "fake-codex.js"), marker = path.join(directory, "cwd.txt");
+  const response = JSON.stringify({ intent:"answer", observedText:"stream", message:"immediate", commands:[] });
+  await fs.promises.writeFile(fakeCli, `
+const fs = require("fs");
+fs.writeFileSync(${JSON.stringify(marker)}, process.cwd());
+process.stdout.write(JSON.stringify({type:"thread.started",thread_id:"test"})+"\\n");
+process.stdout.write(JSON.stringify({type:"turn.started"})+"\\n");
+process.stdout.write(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:${JSON.stringify(response)}}})+"\\n");
+process.stdout.write(JSON.stringify({type:"turn.completed",usage:{}})+"\\n");
+setInterval(() => {}, 1000);
+`);
+  try {
+    const started = Date.now(), content = await callCodexCli({ executable:fakeCli, prompt:"stream", atlasImage:PNG, env:testCodexEnv(directory) }), elapsedMs=Date.now()-started;
+    assert.equal(JSON.parse(content).message, "immediate");
+    assert.ok(elapsedMs < 1500, `streamed completion took ${elapsedMs}ms`);
+    const workDir = await fs.promises.readFile(marker, "utf8"), deadline=Date.now()+5000;
+    while(fs.existsSync(workDir)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+    assert.equal(fs.existsSync(workDir), false);
+  } finally {
+    await fs.promises.rm(directory, { recursive:true, force:true });
+  }
+});
+
+test("aborts immediately, preserves CLI diagnostics, and cleans up in the background", async () => {
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "penecho-codex-abort-test-"));
   const fakeCli = path.join(directory, "fake-codex.js"), marker = path.join(directory, "cwd.txt");
   await fs.promises.writeFile(fakeCli, `
 const fs = require("fs");
+fs.writeFileSync(process.argv[process.argv.indexOf("-o") + 1], "partial-final-message");
+process.stderr.write("waiting for child process to exit");
 fs.writeFileSync(${JSON.stringify(marker)}, process.cwd());
 setInterval(() => {}, 1000);
 `);
@@ -113,8 +163,16 @@ setInterval(() => {}, 1000);
     while (!fs.existsSync(marker) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
     assert.ok(fs.existsSync(marker));
     const workDir = await fs.promises.readFile(marker, "utf8");
-    controller.abort();
-    await assert.rejects(request, error => error?.name === "AbortError");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const started=Date.now();controller.abort();
+    let failure;
+    try { await request; } catch(error) { failure=error; }
+    assert.equal(failure?.name, "AbortError");
+    assert.ok(Date.now()-started < 1000);
+    assert.match(failure.traceDiagnostic, /waiting for child process to exit/);
+    assert.match(failure.traceDiagnostic, /partial-final-message/);
+    const cleanupDeadline=Date.now()+5000;
+    while(fs.existsSync(workDir)&&Date.now()<cleanupDeadline)await new Promise(resolve=>setTimeout(resolve,20));
     assert.equal(fs.existsSync(workDir), false);
   } finally {
     controller.abort();

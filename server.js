@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const os = require("os");
 const net = require("net");
 const { URL } = require("url");
+const { resolveApiConfig } = require("./api-config.js");
 const { callCodexCli } = require("./codex-cli.js");
 const { callClaudeCli } = require("./claude-cli.js");
 let sharp = null;
@@ -14,13 +15,14 @@ try { sharp = require("sharp"); } catch {}
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, "public");
-loadEnv(path.join(ROOT, ".env"));
 const AI_PROVIDER = normalizeAiProvider(process.env.AI_PROVIDER);
 const API_BASE_URL = firstNonEmpty(process.env.AI_API_URL, process.env.OPENAI_API_URL);
 const API_FORMAT = firstNonEmpty(process.env.AI_API_FORMAT, process.env.OPENAI_API_FORMAT)?.toLowerCase();
 const API_KEY = firstNonEmpty(process.env.AI_API_KEY, process.env.OPENAI_API_KEY);
 const MAX_BODY = 9 * 1024 * 1024;
-const DEFAULT_MODEL_TIMEOUT_MS = 120000;
+const DEFAULT_MODEL_TIMEOUT_MS = 180000;
+const ANTHROPIC_RESPONSE_MAX_TOKENS = 8192;
+const MODEL_FINAL_JSON_TARGET_TOKENS = 4096;
 const LOG_DIR = process.env.PENECHO_STATE_DIR ? path.resolve(process.env.PENECHO_STATE_DIR, "logs") : path.join(ROOT, "logs");
 const LOG_FILE = path.join(LOG_DIR, "penecho.log");
 const REQUEST_TRACE_DIR = path.join(LOG_DIR, "requests");
@@ -43,26 +45,28 @@ const requestTraceValue = optionalBoolean(process.env.PENECHO_REQUEST_TRACE),
   requestTraceLimitValue = requestTraceLimitText ? Number(requestTraceLimitText) : 100,
   requestTraceLimitValid = Number.isInteger(requestTraceLimitValue) && requestTraceLimitValue >= 1 && requestTraceLimitValue <= 1000,
   REQUEST_TRACE_LIMIT = requestTraceLimitValid ? requestTraceLimitValue : 100;
-const codexTimeoutText = process.env.CODEX_CLI_TIMEOUT_SECONDS?.trim(),
-  codexTimeoutValue = codexTimeoutText ? Number(codexTimeoutText) : DEFAULT_MODEL_TIMEOUT_MS / 1000,
-  codexTimeoutValid = Number.isFinite(codexTimeoutValue) && codexTimeoutValue >= 10 && codexTimeoutValue <= 300;
+const timeoutText = firstNonEmpty(
+    process.env.AI_TIMEOUT_SECONDS,
+    AI_PROVIDER === "codex-cli" ? process.env.CODEX_CLI_TIMEOUT_SECONDS : "",
+    AI_PROVIDER === "claude-cli" ? process.env.CLAUDE_CLI_TIMEOUT_SECONDS : "",
+  ),
+  timeoutValue = timeoutText ? Number(timeoutText) : DEFAULT_MODEL_TIMEOUT_MS / 1000,
+  timeoutValid = Number.isInteger(timeoutValue) && timeoutValue >= 10 && timeoutValue <= 600,
+  MODEL_TIMEOUT_MS = timeoutValid ? timeoutValue * 1000 : DEFAULT_MODEL_TIMEOUT_MS;
 const CODEX_CLI = {
   executable: process.env.CODEX_CLI_PATH?.trim() || "codex",
   model: process.env.CODEX_CLI_MODEL?.trim() || null,
   effort: AI_EFFORT,
-  timeoutMs: codexTimeoutValid ? Math.round(codexTimeoutValue * 1000) : DEFAULT_MODEL_TIMEOUT_MS,
+  timeoutMs:MODEL_TIMEOUT_MS,
 };
-const claudeTimeoutText = process.env.CLAUDE_CLI_TIMEOUT_SECONDS?.trim(),
-  claudeTimeoutValue = claudeTimeoutText ? Number(claudeTimeoutText) : DEFAULT_MODEL_TIMEOUT_MS / 1000,
-  claudeTimeoutValid = Number.isFinite(claudeTimeoutValue) && claudeTimeoutValue >= 10 && claudeTimeoutValue <= 300;
 const CLAUDE_CLI = {
   executable: process.env.CLAUDE_CLI_PATH?.trim() || "claude",
   model: process.env.CLAUDE_CLI_MODEL?.trim() || null,
   effort: AI_EFFORT,
-  timeoutMs: claudeTimeoutValid ? Math.round(claudeTimeoutValue * 1000) : DEFAULT_MODEL_TIMEOUT_MS,
+  timeoutMs:MODEL_TIMEOUT_MS,
 };
 const LOCAL_CLI = AI_PROVIDER === "codex-cli" ? { ...CODEX_CLI, label:"Codex CLI", doctor:"codex" } : AI_PROVIDER === "claude-cli" ? { ...CLAUDE_CLI, label:"Claude CLI", doctor:"claude" } : null;
-const AI_REQUEST_TIMEOUT_MS = (LOCAL_CLI?.timeoutMs || DEFAULT_MODEL_TIMEOUT_MS) * 2 + 20000;
+const AI_REQUEST_TIMEOUT_MS = MODEL_TIMEOUT_MS * 2 + 20000;
 const AI_SESSION_COOKIE_PREFIX = "penecho_ai_session";
 const AI_SESSION_TOKEN = crypto.randomBytes(32).toString("base64url");
 let activeLocalRequest = null;
@@ -71,16 +75,9 @@ function firstNonEmpty(...values) {
   return values.map(value=>String(value || "").trim()).find(Boolean) || undefined;
 }
 
-function loadEnv(file) {
-  if (!fs.existsSync(file)) return;
-  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
-    const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
-    if (match && process.env[match[1]] === undefined) process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, "");
-  }
-}
-
 function normalizeAiProvider(value) {
-  const provider = String(value || "api").trim().toLowerCase();
+  const provider = String(value || "").trim().toLowerCase();
+  if (!provider) return null;
   if (provider === "api") return "api";
   if (["codex", "codex-cli"].includes(provider)) return "codex-cli";
   if (["claude", "claude-cli"].includes(provider)) return "claude-cli";
@@ -89,8 +86,7 @@ function normalizeAiProvider(value) {
 
 function normalizeAiImageFormat(value) {
   const format=String(value||"webp").trim().toLowerCase();
-  if(format==="jpg")return"jpeg";
-  return["webp","png","jpeg"].includes(format)?format:null;
+  return["webp","png"].includes(format)?format:null;
 }
 
 function optionalBoolean(value) {
@@ -105,42 +101,13 @@ function providerConfigurationError() {
   if (!AI_PROVIDER) return "AI_PROVIDER must be api, codex-cli, or claude-cli.";
   if (AI_PROVIDER === "api" && (!API || !MODEL)) return "Server must configure a valid AI_API_URL base URL and AI_API_MODEL. AI_API_FORMAT, when set, must be openai or anthropic.";
   if (AI_PROVIDER === "api" && !API_KEY) return "Server is missing AI_API_KEY.";
-  if (AI_PROVIDER === "api" && !AI_IMAGE_FORMAT) return "PENECHO_AI_IMAGE_FORMAT must be webp, png, or jpeg when set.";
+  if (!AI_IMAGE_FORMAT) return "PENECHO_AI_IMAGE_FORMAT must be webp or png when set.";
+  if (AI_IMAGE_FORMAT === "webp" && !sharp) return "WebP image encoding is unavailable. Reinstall PenEcho so its Sharp dependency is present, or select PNG in Settings.";
   if (debugArtifactsValue === null) return "PENECHO_DEBUG_ARTIFACTS must be true or false when set.";
   if (requestTraceValue === null) return "PENECHO_REQUEST_TRACE must be true or false when set.";
   if (!requestTraceLimitValid) return "PENECHO_REQUEST_TRACE_LIMIT must be an integer between 1 and 1000.";
-  if (AI_PROVIDER === "codex-cli" && !codexTimeoutValid) return "CODEX_CLI_TIMEOUT_SECONDS must be between 10 and 300.";
-  if (AI_PROVIDER === "claude-cli" && !claudeTimeoutValid) return "CLAUDE_CLI_TIMEOUT_SECONDS must be between 10 and 300.";
+  if (!timeoutValid) return "AI_TIMEOUT_SECONDS must be an integer from 10 to 600.";
   return null;
-}
-
-function resolveApiConfig(value, formatOverride) {
-  if (!value) return null;
-  if (formatOverride && !["openai", "anthropic"].includes(formatOverride)) return null;
-  try {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password) return null;
-    url.hash = "";
-    const basePath = url.pathname.replace(/\/+$/, ""), path = basePath.toLowerCase();
-    if (path.endsWith("/v1/messages")) {
-      url.pathname = basePath;
-      return { format: "anthropic", endpoint: url.href };
-    }
-    if (path.endsWith("/chat/completions")) {
-      url.pathname = basePath;
-      return { format: "openai", endpoint: url.href };
-    }
-    const openaiBase = path.endsWith("/v1") || /\/(?:v1beta\/)?openai$/i.test(path),
-      format = formatOverride || (openaiBase ? "openai" : "anthropic");
-    if (format === "openai") {
-      url.pathname = `${basePath}/chat/completions`;
-      return { format: "openai", endpoint: url.href };
-    }
-    url.pathname = `${basePath}/v1/messages`;
-    return { format: "anthropic", endpoint: url.href };
-  } catch {
-    return null;
-  }
 }
 
 function providerRequest(key, model, text, atlasImage = null) {
@@ -154,7 +121,7 @@ function providerRequest(key, model, text, atlasImage = null) {
       : text;
     return {
       headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model, max_tokens: atlasImage ? 4096 : 10, temperature: atlasImage ? 0.15 : 0, output_config: { effort: API_EFFORT }, ...(atlasImage ? { system: ACTIVE_SYSTEM_PROMPT } : {}), messages: [{ role: "user", content }] }),
+      body: JSON.stringify({ model, max_tokens: atlasImage ? ANTHROPIC_RESPONSE_MAX_TOKENS : 10, temperature: atlasImage ? 0.15 : 0, output_config: { effort: API_EFFORT }, ...(atlasImage ? { system: ACTIVE_SYSTEM_PROMPT } : {}), messages: [{ role: "user", content }] }),
     };
   }
   const messages = atlasImage
@@ -172,7 +139,7 @@ function providerResponseText(raw) {
   return Array.isArray(content) ? content.map((part) => part?.text || "").join("\n") : content || "";
 }
 
-const SYSTEM_PROMPT = `You are the drawing brain for a general interactive handwritten visual Q&A board, not only a math board. Return strict JSON only: {"intent":"none|hint|continue|explain|plot|correct|erase|answer","observedText":"what you can read, optional","message":"short optional","commands":[...]}. Recognize and reason about handwritten natural-language questions (Chinese and English), mathematics, diagrams, charts, sketches, and mixed content. When content is a question, greeting, conversational message, or request, actively respond; do NOT return intent none simply because it is not mathematics. Inspect actual image pixels carefully. For auto, give a useful but short response when enough information exists. A manual action is a style preference, not permission to ignore content. Never draw system status, recognition failure, retry, or debugging messages. For an actual problem, hint gives a concise clue; continue continues the user's work; explain explains it; plot creates a relevant graph; answer answers directly. Use write_text for ordinary knowledge and conversation; draw_formula for math notation; draw or plot_function only when a visual helps. Keep each write_text response at no more than about 200 tokens and 800 characters.
+const SYSTEM_PROMPT = `You are the drawing brain for a general interactive handwritten visual Q&A board, not only a math board. Return strict JSON only: {"intent":"none|hint|continue|explain|plot|correct|erase|answer","observedText":"what you can read, optional","message":"short optional","commands":[...]}. Keep the entire final JSON response compact and within approximately ${MODEL_FINAL_JSON_TARGET_TOKENS} tokens, including every command. Recognize and reason about handwritten natural-language questions (Chinese and English), mathematics, diagrams, charts, sketches, and mixed content. When content is a question, greeting, conversational message, or request, actively respond; do NOT return intent none simply because it is not mathematics. Inspect actual image pixels carefully. For auto, give a useful but short response when enough information exists. A manual action is a style preference, not permission to ignore content. Never draw system status, recognition failure, retry, or debugging messages. For an actual problem, hint gives a concise clue; continue continues the user's work; explain explains it; plot creates a relevant graph; answer answers directly. Use write_text for ordinary knowledge and conversation; draw_formula for math notation; draw or plot_function only when a visual helps. Keep each write_text response at no more than about 200 tokens and 800 characters.
 
 The attached image is a clean white-background rendering of confirmed canvas content around the newest input. It may come from outside the user's current viewport. sourceRect is the image's full-resolution global canvas rectangle and imageScale maps global units to image pixels: imageX=(globalX-sourceRect.x)*imageScale and imageY=(globalY-sourceRect.y)*imageScale. latestInput.imageRect is the AUTHORITATIVE attention region for this request. First transcribe the newest user ink in that region and put only that transcription in observedText. Older content may overlap the rectangle, so use the current hotspot trajectory and visible stroke continuity to distinguish the newest writing. Pixels outside that rectangle are older context or confirmed AI output. Do not combine outside text into observedText unless the latest input visually refers to it. hotspotGrid.hotspots contains only the current unconsumed user-writing segment, ordered oldest to newest; use it only to refine reading order inside latestInput.imageRect. Confirmed AI output can appear in the image but is not part of the user hotspot trajectory. When focusInset is present, its imageRect is a magnified duplicate of the latest handwriting, not additional content. Use that inset as the primary transcription view, then cross-check the original latestInput.imageRect for spatial context.
 
@@ -266,9 +233,9 @@ function canonicalPayload(p) {
   };
 }
 function imageDataUrlParts(dataUrl) {
-  const match=/^data:(image\/(?:png|webp|jpeg));base64,([A-Za-z0-9+/]+={0,2})$/i.exec(String(dataUrl||""));
+  const match=/^data:(image\/(?:png|webp));base64,([A-Za-z0-9+/]+={0,2})$/i.exec(String(dataUrl||""));
   if(!match)return null;
-  const mimeType=match[1].toLowerCase(),base64=match[2],buffer=Buffer.from(base64,"base64"),extension=mimeType==="image/webp"?"webp":mimeType==="image/jpeg"?"jpg":"png";
+  const mimeType=match[1].toLowerCase(),base64=match[2],buffer=Buffer.from(base64,"base64"),extension=mimeType==="image/webp"?"webp":"png";
   return{mimeType,base64,buffer,bytes:buffer.length,extension,file:`atlas.${extension}`};
 }
 function encodedImageSize(dataUrl){
@@ -279,20 +246,18 @@ function encodedImageSize(dataUrl){
 async function prepareOutboundAtlas(atlasImage) {
   const source=imageDataUrlParts(atlasImage);
   if(!source)throw new Error("Invalid atlas image data URL.");
-  const configuredFormat=AI_IMAGE_FORMAT||"invalid",result={sourceImage:atlasImage,source,preferredImage:atlasImage,preferred:source,encoding:{requested:AI_PROVIDER==="api"&&configuredFormat!=="png",configuredFormat,format:configuredFormat==="webp"?"webp-lossless":configuredFormat==="jpeg"?"jpeg-q95-444":"png-original",status:AI_PROVIDER==="api"?configuredFormat==="png"?"source":"unavailable":"not-needed",lossless:configuredFormat!=="jpeg"},fallbackUsed:false,fallback:null};
-  if(AI_PROVIDER!=="api")return result;
+  const configuredFormat=AI_IMAGE_FORMAT||"invalid",result={sourceImage:atlasImage,source,preferredImage:atlasImage,preferred:source,encoding:{requested:configuredFormat!=="png",configuredFormat,format:configuredFormat==="webp"?"webp-lossless":"png-original",status:configuredFormat==="png"?"source":"unavailable",lossless:true},fallbackUsed:false,fallback:null};
   if(configuredFormat==="png")return result;
-  if(!sharp){result.encoding.reason="encoder-unavailable";return result}
+  if(!sharp)throw new Error("WebP image encoding is unavailable. Select PNG in Settings or reinstall PenEcho.");
   try {
-    const pipeline=sharp(source.buffer,{failOn:"error",limitInputPixels:2048*1536,sequentialRead:true}),buffer=configuredFormat==="webp"?await pipeline.webp({lossless:true,effort:6}).toBuffer():await pipeline.flatten({background:"#fff"}).jpeg({quality:95,chromaSubsampling:"4:4:4",optimiseCoding:true}).toBuffer(),mimeType=configuredFormat==="webp"?"image/webp":"image/jpeg",base64=buffer.toString("base64"),preferredImage=`data:${mimeType};base64,${base64}`,preferred=imageDataUrlParts(preferredImage);
+    const pipeline=sharp(source.buffer,{failOn:"error",limitInputPixels:2048*1536,sequentialRead:true}),buffer=await pipeline.webp({lossless:true,effort:6}).toBuffer(),mimeType="image/webp",base64=buffer.toString("base64"),preferredImage=`data:${mimeType};base64,${base64}`,preferred=imageDataUrlParts(preferredImage);
     if(!preferred)throw new Error("Image encoder returned invalid output.");
     result.preferredImage=preferredImage;
     result.preferred=preferred;
     result.encoding={...result.encoding,status:"encoded"};
     return result;
-  } catch {
-    result.encoding.reason="encode-failed";
-    return result;
+  } catch (error) {
+    throw new Error(`Unable to encode the canvas as WebP: ${error.message}`);
   }
 }
 function isImageFormatRejection(error) {
@@ -473,15 +438,16 @@ function traceSafeValue(value, atlasImage, atlasBase64, atlasFile) {
 }
 function tracedOutboundRequest(modelInput, atlasImage, retryInstruction="") {
   const text=modelRequestText(modelInput,retryInstruction);
+  const image=imageDataUrlParts(atlasImage);
   if (AI_PROVIDER === "codex-cli") return {
     provider:"codex-cli",
     executable:CODEX_CLI.executable,
     model:CODEX_CLI.model||"configured-default",
     effort:CODEX_CLI.effort||"cli-default",
     prompt:codexModelPrompt(text),
-    image:"atlas.png",
-    imageMimeType:"image/png",
-    imageBytes:imageDataUrlParts(atlasImage)?.bytes||null,
+    image:image?.file||null,
+    imageMimeType:image?.mimeType||null,
+    imageBytes:image?.bytes||null,
   };
   if (AI_PROVIDER === "claude-cli") return {
     provider:"claude-cli",
@@ -492,15 +458,15 @@ function tracedOutboundRequest(modelInput, atlasImage, retryInstruction="") {
     prompt:localCliRequestPrompt(text),
     inputFormat:"stream-json",
     tools:[],
-    image:"atlas.png",
-    imageMimeType:"image/png",
-    imageBytes:imageDataUrlParts(atlasImage)?.bytes||null,
+    image:image?.file||null,
+    imageMimeType:image?.mimeType||null,
+    imageBytes:image?.bytes||null,
   };
-  const image=imageDataUrlParts(atlasImage),request=providerRequest("<redacted>",MODEL,text,atlasImage),
+  const request=providerRequest("<redacted>",MODEL,text,atlasImage),
     headers=Object.fromEntries(Object.entries(request.headers).map(([name,value])=>[name,/authorization|api-key/i.test(name)?"<redacted>":value])),
     atlasBase64=image.base64,
     body=traceSafeValue(JSON.parse(request.body),atlasImage,atlasBase64,image.file);
-  return {provider:"api",format:API.format,endpoint:API.endpoint,method:"POST",headers,body,image:image.file,imageMimeType:image.mimeType,imageBytes:image.bytes,imageEncoding:image.mimeType==="image/webp"?"lossless-webp":image.mimeType==="image/jpeg"?"jpeg-q95-444":"original-png"};
+  return {provider:"api",format:API.format,endpoint:API.endpoint,method:"POST",headers,body,image:image.file,imageMimeType:image.mimeType,imageBytes:image.bytes,imageEncoding:image.mimeType==="image/webp"?"lossless-webp":"original-png"};
 }
 function requestTraceChild(name) {
   const root=path.resolve(REQUEST_TRACE_DIR),target=path.resolve(root,name);
@@ -567,7 +533,7 @@ function traceAttemptResponse(trace, attempt, model) {
   });
 }
 function traceErrorDetails(error) {
-  return {name:String(error?.name||"Error"),message:String(error?.message||"Unknown error").slice(0,65536),status:Number.isInteger(error?.status)?error.status:null,upstream:error?.upstream||null};
+  return {name:String(error?.name||"Error"),message:String(error?.message||"Unknown error").slice(0,65536),status:Number.isInteger(error?.status)?error.status:null,upstream:error?.upstream||null,cliDiagnostic:error?.traceDiagnostic?String(error.traceDiagnostic).slice(0,131072):null};
 }
 function traceAttemptError(trace, attempt, error) {
   updateRequestTrace(trace,data=>{
@@ -589,8 +555,7 @@ async function callModelWithTrace(trace, attempt, modelInput, atlasImage, retryI
   }
 }
 function traceImageFallback(trace, error, fromMimeType) {
-  const format=fromMimeType==="image/jpeg"?"jpeg":"webp";
-  updateRequestTrace(trace,data=>{data.image.fallback={used:true,reason:`upstream-${format}-format-rejected`,from:fromMimeType,to:"image/png",upstreamStatus:Number.isInteger(error?.status)?error.status:null,at:new Date().toISOString()}});
+  updateRequestTrace(trace,data=>{data.image.fallback={used:true,reason:"upstream-webp-format-rejected",from:fromMimeType,to:"image/png",upstreamStatus:Number.isInteger(error?.status)?error.status:null,at:new Date().toISOString()}});
 }
 function completeRequestTrace(trace, status, httpStatus, body=null, error=null) {
   updateRequestTrace(trace,data=>{
@@ -601,7 +566,7 @@ function completeRequestTrace(trace, status, httpStatus, body=null, error=null) 
   });
 }
 async function callModel(modelInput, atlasImage, retryInstruction="", externalSignal = null) {
-  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), LOCAL_CLI ? LOCAL_CLI.timeoutMs : DEFAULT_MODEL_TIMEOUT_MS);
+  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
   const abortFromClient = () => controller.abort();
   if (externalSignal?.aborted) controller.abort();
   else externalSignal?.addEventListener("abort", abortFromClient, { once: true });
@@ -634,7 +599,17 @@ async function callModel(modelInput, atlasImage, retryInstruction="", externalSi
     const content=providerResponseText(raw);
     let result;
     try { result=parsedModelResponse(content); }
-    catch(error){error.upstream={...upstreamResponseTrace(response,raw),rawContent:content};throw error}
+    catch(error){
+      const upstream={...upstreamResponseTrace(response,raw),rawContent:content};
+      if(upstream.finishReason==="max_tokens"){
+        const limitError=new Error(`Model reached the ${ANTHROPIC_RESPONSE_MAX_TOKENS}-token response allowance before completing its final JSON. Retry or lower the reasoning effort.`);
+        limitError.name="ModelOutputLimitError";
+        limitError.upstream=upstream;
+        throw limitError;
+      }
+      error.upstream=upstream;
+      throw error;
+    }
     return {content,result,status:response.status,provider:"api",model:MODEL,effort:API_EFFORT,upstream:upstreamResponseTrace(response,raw)};
   } finally {
     clearTimeout(timeout);
@@ -762,7 +737,7 @@ const server = http.createServer(async (req, res) => {
         catch(error){
           const active=imageDataUrlParts(activeAtlasImage);
           if(!active||active.mimeType==="image/png"||imageTransport.fallbackUsed||!isImageFormatRejection(error))throw error;
-          const format=active.mimeType==="image/jpeg"?"jpeg":"webp",reason=`upstream-${format}-format-rejected`;
+          const format="webp",reason="upstream-webp-format-rejected";
           imageTransport.fallbackUsed=true;
           imageTransport.fallback={reason,from:active.mimeType,to:"image/png",upstreamStatus:error.status};
           activeAtlasImage=imageTransport.sourceImage;
@@ -845,5 +820,5 @@ if (startupConfigurationError) {
 } else server.listen(PORT, HOST, () => {
   const address = server.address(), listeningPort = typeof address === "object" && address ? address.port : PORT;
   console.log(`PenEcho: http://${HOST}:${listeningPort} (${AI_PROVIDER || "invalid provider"})`);
-  log({ type:"server-start", host:HOST, port:listeningPort, provider:AI_PROVIDER,requestTrace:REQUEST_TRACE_ENABLED?REQUEST_TRACE_LIMIT:0,aiImageFormat:AI_PROVIDER==="api"?AI_IMAGE_FORMAT:null,imageEncoder:AI_PROVIDER==="api"&&AI_IMAGE_FORMAT!=="png"&&Boolean(sharp) });
+  log({ type:"server-start", host:HOST, port:listeningPort, provider:AI_PROVIDER,requestTrace:REQUEST_TRACE_ENABLED?REQUEST_TRACE_LIMIT:0,aiImageFormat:AI_IMAGE_FORMAT,imageEncoder:AI_IMAGE_FORMAT!=="png"&&Boolean(sharp) });
 });
