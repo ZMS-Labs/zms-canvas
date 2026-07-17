@@ -63,16 +63,28 @@ The same neutral fields work for both providers: `AI_API_FORMAT`, `AI_API_URL`, 
 
 ### Option 2: Codex on your machine
 
+Install the Codex CLI separately before using this mode. Installing the Codex desktop app alone does not guarantee that a `codex` executable is available on your shell `PATH` for PenEcho to call. Install the latest CLI globally with npm:
+
 ```bash
-# You are already signed in to Codex.
-# codex login
+npm install -g @openai/codex@latest
+hash -r
+codex --version
+codex login status
+```
+
+If you are not signed in yet, run `codex login`. Then verify and start PenEcho:
+
+```bash
 penecho doctor --codex
 penecho --codex
+
+# Optional one-run overrides
+penecho --codex --model gpt-5.6-sol --effort low
 ```
 
 This runs `codex exec` locally for each canvas request. It uses your authenticated Codex CLI directly and does not require an API key. Startup checks the CLI version and login state without calling a model or consuming tokens. It is a local execution path through Codex, not a local model.
 
-Set `CODEX_CLI_MODEL` to any model ID accepted by your installed Codex CLI. Leave it empty to keep your CLI's configured default. If `AI_EFFORT` is set, PenEcho passes it as the Codex `model_reasoning_effort` override; when empty, Codex keeps its own default.
+`--model` accepts any model ID understood by the installed Codex CLI, and `--effort` accepts known values such as `low`, `medium`, `high`, `xhigh`, or `max`, as well as other model-specific strings. These flags apply only to the current PenEcho process and override `CODEX_CLI_MODEL` and `AI_EFFORT` from configuration. If a flag is omitted, the corresponding environment setting is used; if that is also empty, Codex selects the default model or effort for PenEcho's isolated CLI session. PenEcho intentionally excludes the user's Codex configuration from model requests, so an unset `CODEX_CLI_MODEL` does not inherit `model` from `~/.codex/config.toml`.
 
 `CODEX_CLI_TIMEOUT_SECONDS` defaults to 120 seconds per model attempt.
 
@@ -83,11 +95,14 @@ Set `CODEX_CLI_MODEL` to any model ID accepted by your installed Codex CLI. Leav
 # claude auth login
 penecho doctor --claude
 penecho --claude
+
+# Optional one-run overrides
+penecho --claude --model sonnet --effort low
 ```
 
 This runs `claude -p` locally for each canvas request, using the Claude Code login already available on the machine. It does not need `AI_API_URL` or `AI_API_KEY`. The startup check only verifies the CLI version and authentication state; it does not call a model.
 
-Set `CLAUDE_CLI_MODEL` to an alias such as `sonnet`, `opus`, or `haiku`, or to a full model ID accepted by your installed Claude CLI. Leave it empty to keep your CLI's configured default. If `AI_EFFORT` is set, PenEcho passes `--effort` to Claude; when empty, Claude keeps its own default. See the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-usage) for accepted model forms.
+`--model` accepts an alias such as `sonnet`, `opus`, or `haiku`, or a full model ID accepted by the installed Claude CLI. `--effort` accepts known values and other strings supported by that CLI. These flags apply only to the current PenEcho process and override `CLAUDE_CLI_MODEL` and `AI_EFFORT` from configuration. If a flag and its environment setting are both omitted, Claude keeps its own default. See the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-usage) for accepted model forms.
 
 `CLAUDE_CLI_TIMEOUT_SECONDS` defaults to 120 seconds per model attempt.
 
@@ -118,6 +133,8 @@ On Windows PowerShell, use `Copy-Item .env.api .env` (or the corresponding Codex
 npm install
 npm start
 ```
+
+`npm start` reads the `.env` file in this source directory directly. Model and effort settings there are effective: use `CODEX_CLI_MODEL` plus `AI_EFFORT` with `AI_PROVIDER=codex-cli`, or `CLAUDE_CLI_MODEL` plus `AI_EFFORT` with `AI_PROVIDER=claude-cli`. Empty model or effort values leave that choice to the selected CLI. Restart `npm start` after editing `.env`. The `--model` and `--effort` command-line options belong to the installed `penecho` command; configure `.env` instead when starting with npm.
 
 Open [http://localhost:3888](http://localhost:3888). Other devices on the same trusted LAN can use `http://<this-computer-LAN-IP>:3888`.
 
@@ -164,6 +181,8 @@ For either mode, keep debug artifacts and request tracing disabled in production
 | `PENECHO_REQUEST_TRACE` | Save local per-request image, outbound request, response, and outcome traces; disabled by default |
 | `PENECHO_REQUEST_TRACE_LIMIT` | Number of local request traces retained, default 100 and maximum 1000 |
 | `HOST` / `PORT` | Server address and port, default `0.0.0.0:3888` |
+
+For installed CLI starts, `--model` overrides the selected executor's model setting and `--effort` overrides `AI_EFFORT` for that process only. Command-line options take precedence over environment files.
 
 Run the checks before submitting a change:
 

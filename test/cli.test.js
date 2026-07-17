@@ -42,12 +42,16 @@ function isolatedConfiguration(args = parseArgs([]), overrides = {}) {
 }
 
 test("parses provider, doctor, and port options", () => {
-  assert.deepEqual(parseArgs(["--api", "--port", "4000"]), { command: "start", provider: "api", port: 4000, help: false, version: false });
-  assert.deepEqual(parseArgs(["doctor", "--codex", "--port=0"]), { command: "doctor", provider: "codex-cli", port: 0, help: false, version: false });
-  assert.deepEqual(parseArgs(["doctor", "--claude"]), { command: "doctor", provider: "claude-cli", port: null, help: false, version: false });
+  assert.deepEqual(parseArgs(["--api", "--port", "4000"]), { command: "start", provider: "api", port: 4000, model: null, effort: null, help: false, version: false });
+  assert.deepEqual(parseArgs(["doctor", "--codex", "--port=0"]), { command: "doctor", provider: "codex-cli", port: 0, model: null, effort: null, help: false, version: false });
+  assert.deepEqual(parseArgs(["doctor", "--claude"]), { command: "doctor", provider: "claude-cli", port: null, model: null, effort: null, help: false, version: false });
+  assert.deepEqual(parseArgs(["--codex", "--model", "gpt-5.4", "--effort=xhigh"]), { command: "start", provider: "codex-cli", port: null, model: "gpt-5.4", effort: "xhigh", help: false, version: false });
+  assert.deepEqual(parseArgs(["--claude", "--model=sonnet", "--effort", "future-level"]), { command: "start", provider: "claude-cli", port: null, model: "sonnet", effort: "future-level", help: false, version: false });
   assert.throws(() => parseArgs(["--api", "--codex"]), /cannot be used together/);
   assert.throws(() => parseArgs(["--codex", "--claude"]), /cannot be used together/);
   assert.throws(() => parseArgs(["--port", "65536"]), /0 to 65535/);
+  assert.throws(() => parseArgs(["--model"]), /requires a value/);
+  assert.throws(() => parseArgs(["--effort="]), /non-empty value/);
   assert.throws(() => parseArgs(["--unknown"]), /Unknown option/);
 });
 
@@ -62,6 +66,33 @@ test("configuration precedence is environment, cwd, user config, then package co
   assert.equal(configuration.env.OPENAI_API_URL, "https://package.test/v1");
   assert.equal(configuration.env.AI_PROVIDER, "api");
   assert.equal(configuration.port, 4000);
+});
+
+test("CLI model and effort override environment configuration for Codex and Claude", () => {
+  const configured = isolatedConfiguration(parseArgs(["--codex"]), {
+    AI_PROVIDER:"codex-cli", CODEX_CLI_MODEL:"configured-model", AI_EFFORT:"medium",
+  });
+  assert.equal(configured.env.CODEX_CLI_MODEL, "configured-model");
+  assert.equal(configured.env.AI_EFFORT, "medium");
+
+  const codex = isolatedConfiguration(parseArgs(["--codex", "--model", "gpt-5.5", "--effort", "low"]), {
+    AI_PROVIDER:"api", CODEX_CLI_MODEL:"environment-model", AI_EFFORT:"high",
+  });
+  assert.equal(codex.provider, "codex-cli");
+  assert.equal(codex.env.CODEX_CLI_MODEL, "gpt-5.5");
+  assert.equal(codex.env.AI_EFFORT, "low");
+
+  const claude = isolatedConfiguration(parseArgs(["--claude", "--model=sonnet", "--effort=max"]), {
+    AI_PROVIDER:"api", CLAUDE_CLI_MODEL:"opus", AI_EFFORT:"medium",
+  });
+  assert.equal(claude.provider, "claude-cli");
+  assert.equal(claude.env.CLAUDE_CLI_MODEL, "sonnet");
+  assert.equal(claude.env.AI_EFFORT, "max");
+});
+
+test("CLI model and effort are rejected in API mode", () => {
+  assert.throws(() => isolatedConfiguration(parseArgs(["--api", "--model", "gpt-5.5"]), { AI_PROVIDER:"api" }), /only supported with Codex or Claude/);
+  assert.throws(() => isolatedConfiguration(parseArgs(["--api", "--effort", "low"]), { AI_PROVIDER:"api" }), /only supported with Codex or Claude/);
 });
 
 test("API start never prompts and points incomplete configuration to doctor", async () => {
@@ -197,5 +228,7 @@ test("help documents all public commands", () => {
   assert.match(help, /penecho --codex/);
   assert.match(help, /penecho --claude/);
   assert.match(help, /penecho doctor/);
+  assert.match(help, /--model/);
+  assert.match(help, /--effort/);
   assert.match(help, /--port/);
 });

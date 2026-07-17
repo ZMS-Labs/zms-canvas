@@ -28,8 +28,15 @@ function parsePort(value) {
   return port;
 }
 
+function parseTextOption(name, value) {
+  const text = String(value ?? "").trim();
+  if (!text) throw new Error(`${name} requires a non-empty value.`);
+  if (/[\r\n\0]/.test(text)) throw new Error(`${name} contains invalid characters.`);
+  return text;
+}
+
 function parseArgs(argv = []) {
-  const result = { command: "start", provider: null, port: null, help: false, version: false };
+  const result = { command: "start", provider: null, port: null, model: null, effort: null, help: false, version: false };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
     if (argument === "doctor") {
@@ -49,6 +56,16 @@ function parseArgs(argv = []) {
       result.port = parsePort(argv[++index]);
     } else if (argument.startsWith("--port=")) {
       result.port = parsePort(argument.slice("--port=".length));
+    } else if (argument === "--model") {
+      if (index + 1 >= argv.length || argv[index + 1].startsWith("--")) throw new Error("--model requires a value.");
+      result.model = parseTextOption("--model", argv[++index]);
+    } else if (argument.startsWith("--model=")) {
+      result.model = parseTextOption("--model", argument.slice("--model=".length));
+    } else if (argument === "--effort") {
+      if (index + 1 >= argv.length || argv[index + 1].startsWith("--")) throw new Error("--effort requires a value.");
+      result.effort = parseTextOption("--effort", argv[++index]);
+    } else if (argument.startsWith("--effort=")) {
+      result.effort = parseTextOption("--effort", argument.slice("--effort=".length));
     } else if (argument === "--help" || argument === "-h") {
       result.help = true;
     } else if (argument === "--version" || argument === "-v") {
@@ -105,6 +122,17 @@ function resolveConfiguration(args, options = {}) {
   };
   if (args.provider) env.AI_PROVIDER = args.provider;
   if (args.port !== null) env.PORT = String(args.port);
+  const provider = normalizeProvider(env.AI_PROVIDER);
+  if (args.model !== null || args.effort !== null) {
+    if (provider === "codex-cli") {
+      if (args.model !== null) env.CODEX_CLI_MODEL = args.model;
+    } else if (provider === "claude-cli") {
+      if (args.model !== null) env.CLAUDE_CLI_MODEL = args.model;
+    } else {
+      throw new Error("--model and --effort are only supported with Codex or Claude CLI mode.");
+    }
+    if (args.effort !== null) env.AI_EFFORT = args.effort;
+  }
   env.PENECHO_STATE_DIR = stateDir;
   return {
     env,
@@ -113,7 +141,7 @@ function resolveConfiguration(args, options = {}) {
     packageRoot,
     stateDir,
     configFile: path.join(stateDir, "config.env"),
-    provider: normalizeProvider(env.AI_PROVIDER),
+    provider,
     port: env.PORT === undefined || env.PORT === "" ? DEFAULT_PORT : parsePort(env.PORT),
   };
 }
@@ -319,6 +347,8 @@ async function runDoctor(args, configuration, options = {}) {
   const port = await (options.portChecker || checkPortAvailable)(configuration.port, configuration.env.HOST || "0.0.0.0");
   report(port.ok, port.ok ? `Port ${configuration.port} is available` : `Port ${configuration.port} is unavailable (${port.error})`);
   report(true, `Reasoning effort is ${configuration.env.AI_EFFORT || (configuration.provider === "api" ? "max (API default)" : "the CLI default")}`);
+  if (configuration.provider === "codex-cli") report(true, `Model is ${configuration.env.CODEX_CLI_MODEL || "the Codex CLI default for PenEcho's isolated session"}`);
+  if (configuration.provider === "claude-cli") report(true, `Model is ${configuration.env.CLAUDE_CLI_MODEL || "the Claude CLI default"}`);
 
   if (!configuration.provider) {
     report(false, `AI_PROVIDER must be ${PROVIDER_OPTIONS}`);
@@ -348,7 +378,7 @@ function applyConfiguration(env) {
 }
 
 function helpText() {
-  return `PenEcho ${PACKAGE_JSON.version}\n\nUsage:\n  penecho --api [--port 3888]\n  penecho --codex [--port 3888]\n  penecho --claude [--port 3888]\n  penecho doctor [--api|--codex|--claude] [--port 3888]\n\nOptions:\n  --api          Use an OpenAI-format or Anthropic-format API\n  --codex        Use the authenticated Codex CLI\n  --claude       Use the authenticated Claude CLI\n  --port <port>  Listen on a port from 0 to 65535\n  -h, --help     Show help\n  -v, --version  Show version\n\nSetup:\n  penecho doctor --api\n  penecho doctor --codex\n  penecho doctor --claude\n`;
+  return `PenEcho ${PACKAGE_JSON.version}\n\nUsage:\n  penecho --api [--port 3888]\n  penecho --codex [--model MODEL] [--effort LEVEL] [--port 3888]\n  penecho --claude [--model MODEL] [--effort LEVEL] [--port 3888]\n  penecho doctor --api [--port 3888]\n  penecho doctor --codex [--model MODEL] [--effort LEVEL] [--port 3888]\n  penecho doctor --claude [--model MODEL] [--effort LEVEL] [--port 3888]\n\nOptions:\n  --api             Use an OpenAI-format or Anthropic-format API\n  --codex           Use the authenticated Codex CLI\n  --claude          Use the authenticated Claude CLI\n  --model <model>   Override the model for Codex or Claude CLI mode\n  --effort <level>  Override reasoning effort with a known or CLI-supported value\n  --port <port>     Listen on a port from 0 to 65535\n  -h, --help        Show help\n  -v, --version     Show version\n\nKnown effort values include low, medium, high, xhigh, and max. Other strings are passed to the selected CLI.\n\nExamples:\n  penecho --codex --model gpt-5.6-sol --effort low\n  penecho --claude --model sonnet --effort high\n\nSetup:\n  penecho doctor --api\n  penecho doctor --codex\n  penecho doctor --claude\n`;
 }
 
 async function main(argv = process.argv.slice(2), options = {}) {
