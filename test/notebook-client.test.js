@@ -230,6 +230,52 @@ test("a load requested during a deferred save acknowledgment cannot be overwritt
   assert.equal(controller.current().id, loaded.id);
 });
 
+test("drains an in-flight mutation against A before a queued load replaces it with B", async () => {
+  const original = { id: "notebook-a", revision: 1, ...canvasPayload("A") };
+  const loaded = { id: "notebook-b", revision: 5, ...canvasPayload("B") };
+  const firstAcknowledgment = deferred();
+  const events = [];
+  let updateCount = 0;
+  const api = {
+    calls: [],
+    update(id, payload) {
+      updateCount += 1;
+      events.push(`update:${id}:${payload.baseRevision}:${payload.title}`);
+      if (updateCount === 1) {
+        return firstAcknowledgment.promise.then(() => {
+          events.push("ack:notebook-a:2");
+          return { id, revision: 2, ...payload };
+        });
+      }
+      return Promise.resolve({ id, revision: 3, ...payload });
+    },
+    async get(id) { events.push(`get:${id}`); return loaded; },
+  };
+  const { controller } = createController({
+    api,
+    captures: [canvasPayload("A1"), canvasPayload("A2")],
+    apply: async (payload) => { events.push(`apply:${payload.id}`); },
+  });
+  controller.configure({ enabled: true, current: original });
+  controller.markConfirmedMutation();
+
+  const saving = controller.flush();
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.markConfirmedMutation();
+  const loading = controller.load(loaded.id);
+  firstAcknowledgment.resolve();
+  await Promise.all([saving, loading]);
+
+  assert.deepEqual(events, [
+    "update:notebook-a:1:A1",
+    "ack:notebook-a:2",
+    "update:notebook-a:2:A2",
+    "get:notebook-b",
+    "apply:notebook-b",
+  ]);
+  assert.equal(controller.current().id, loaded.id);
+});
+
 test("serializes load and delete so a deleted notebook cannot be applied afterward", async () => {
   const original = { id: "notebook-a", revision: 1, ...canvasPayload("A") };
   const loaded = { id: "notebook-b", revision: 2, ...canvasPayload("B") };

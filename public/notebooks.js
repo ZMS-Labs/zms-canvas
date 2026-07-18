@@ -69,8 +69,22 @@
       if (inFlight) return inFlight;
       let saveAcknowledged = false;
       const operation = enqueue(async function () {
-        if (!enabled) return currentNotebook;
-        if (dirtyVersion === acknowledgedVersion) return currentNotebook;
+        saveAcknowledged = await runSave();
+        return currentNotebook;
+      });
+      const tracked = operation.finally(function () {
+        if (inFlight === tracked) {
+          inFlight = null;
+          if (saveAcknowledged) schedule();
+        }
+      });
+      inFlight = tracked;
+      return tracked;
+    }
+
+    async function runSave() {
+      if (!enabled || dirtyVersion === acknowledgedVersion) return false;
+      try {
         cancelTimer();
         const savingVersion = dirtyVersion;
         const original = currentNotebook;
@@ -91,7 +105,6 @@
             : await api.create(payload);
           currentNotebook = copyCompleteNotebook(acknowledged);
           acknowledgedVersion = savingVersion;
-          saveAcknowledged = true;
           await finishRecovery(operationToken, "Saved");
         } catch (error) {
           if (!original || error.status !== 409) throw error;
@@ -101,28 +114,24 @@
           };
           currentNotebook = copyCompleteNotebook(await api.create(conflictPayload));
           acknowledgedVersion = savingVersion;
-          saveAcknowledged = true;
           await finishRecovery(operationToken, "Conflict copy saved");
         }
-        return currentNotebook;
-      });
-      const tracked = operation
-        .catch(function (error) {
-          reportStatus("Save failed", error);
-          throw error;
-        })
-        .finally(function () {
-          if (inFlight === tracked) {
-            inFlight = null;
-            if (saveAcknowledged) schedule();
-          }
-        });
-      inFlight = tracked;
-      return tracked;
+        return true;
+      } catch (error) {
+        reportStatus("Save failed", error);
+        throw error;
+      }
+    }
+
+    async function drainDirty() {
+      while (enabled && dirtyVersion !== acknowledgedVersion) await runSave();
     }
 
     function load(id) {
-      return enqueue(function () { return runLoad(id); });
+      return enqueue(async function () {
+        await drainDirty();
+        return runLoad(id);
+      });
     }
 
     async function runLoad(id) {
@@ -135,7 +144,10 @@
     }
 
     function restore(id, revision) {
-      return enqueue(function () { return runRestore(id, revision); });
+      return enqueue(async function () {
+        await drainDirty();
+        return runRestore(id, revision);
+      });
     }
 
     async function runRestore(id, revision) {
@@ -161,7 +173,10 @@
     }
 
     function remove(id) {
-      return enqueue(function () { return runRemove(id); });
+      return enqueue(async function () {
+        if (currentNotebook && currentNotebook.id === id) await drainDirty();
+        return runRemove(id);
+      });
     }
 
     async function runRemove(id) {
@@ -175,7 +190,10 @@
     }
 
     function importLegacy(snapshot) {
-      return enqueue(function () { return runImportLegacy(snapshot); });
+      return enqueue(async function () {
+        await drainDirty();
+        return runImportLegacy(snapshot);
+      });
     }
 
     async function runImportLegacy(snapshot) {
