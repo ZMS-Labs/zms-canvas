@@ -1,6 +1,6 @@
 {
-  "name": "penecho",
-  "version": "0.4.2",
+  "name": "@zms-labs/zms-canvas",
+  "version": "0.1.0",
   "description": "Think with AI on a shared canvas for handwriting, equations, and diagrams",
   "license": "AGPL-3.0-only",
   "keywords": [
@@ -11,7 +11,7 @@
     "math"
   ],
   "bin": {
-    "penecho": "cli.js"
+    "zms-canvas": "cli.js"
   },
   "files": [
     "cli.js",
@@ -32,18 +32,18 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/erickong/penecho.git"
+    "url": "git+https://github.com/ZMS-Labs/zms-canvas.git"
   },
-  "homepage": "https://github.com/erickong/penecho#readme",
+  "homepage": "https://github.com/ZMS-Labs/zms-canvas#readme",
   "bugs": {
-    "url": "https://github.com/erickong/penecho/issues"
+    "url": "https://github.com/ZMS-Labs/zms-canvas/issues"
   },
   "scripts": {
     "check": "node --check cli.js && node --check server.js && node --check api-config.js && node --check configure-ui.js && node --check codex-cli.js && node --check claude-cli.js && node --check public/draw.js && node --check public/selection.js && node --check public/app.js && node --test",
     "test": "node --test"
   },
   "engines": {
-    "node": ">=18.17.0"
+    "node": ">=22.5.0"
   },
   "dependencies": {
     "@inquirer/prompts": "7.10.1",

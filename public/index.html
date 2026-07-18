@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#100d18">
-  <title>PenEcho | Handwritten AI Canvas</title>
+  <title>ZMS Canvas | Handwritten AI Canvas</title>
   <link rel="stylesheet" href="style.css">
   <script src="mathjax-config.js"></script>
   <script
@@ -19,10 +19,10 @@
       <header class="top-row">
         <div class="brand">
           <div class="sigil" aria-hidden="true">
-            <img src="penecho-mark.png" alt="">
+            <span>Z</span>
           </div>
           <div class="brand-copy">
-            <h1><span>Pen</span><strong>Echo</strong></h1>
+            <h1><span>ZMS</span><strong>Canvas</strong></h1>
             <p data-i18n="tagline">Write across twenty thousand squares and summon knowledge</p>
           </div>
         </div>
@@ -156,7 +156,7 @@
     <div id="historyBackdrop" class="history-backdrop" hidden></div>
     <aside id="historyPanel" class="history-panel" aria-hidden="true" aria-labelledby="historyTitle">
       <header>
-        <div><span class="history-kicker">PenEcho</span><h2 id="historyTitle" data-i18n="historyTitle">Local canvas history</h2></div>
+        <div><span class="history-kicker">ZMS Canvas</span><h2 id="historyTitle" data-i18n="historyTitle">Local canvas history</h2></div>
         <button id="historyClose" type="button" data-i18n-aria="closeHistory" aria-label="Close history" data-i18n-title="closeHistory" title="Close history">×</button>
       </header>
       <p data-i18n="historyDescription">Stores confirmed canvas content only. Unconfirmed AI drafts are excluded.</p>
@@ -171,7 +171,7 @@
     <dialog id="newCanvasDialog" class="new-canvas-dialog" aria-labelledby="newCanvasTitle">
       <form method="dialog">
         <header>
-          <div><span class="history-kicker">PenEcho</span><h2 id="newCanvasTitle" data-i18n="newCanvasTitle">Start a new canvas?</h2></div>
+          <div><span class="history-kicker">ZMS Canvas</span><h2 id="newCanvasTitle" data-i18n="newCanvasTitle">Start a new canvas?</h2></div>
           <button id="newCanvasClose" class="new-canvas-close" type="button" data-i18n-aria="cancel" aria-label="Cancel" data-i18n-title="cancel" title="Cancel">×</button>
         </header>
         <p data-i18n="newCanvasDescription">Save confirmed content before starting over. Unconfirmed AI drafts are not included.</p>
@@ -217,13 +217,14 @@
     </section>
 
     <section id="debugPanel" hidden>
-      <div><strong data-i18n="debugTitle">PenEcho debug</strong><span id="debugRequest">request: -</span></div>
+      <div><strong data-i18n="debugTitle">ZMS Canvas debug</strong><span id="debugRequest">request: -</span></div>
       <ol id="debugEvents"></ol>
     </section>
 
     <footer>
       <span id="coords">x 10000 · y 10000 · 100%</span>
       <span data-i18n="footerTip">AI drafts: move the whole group or adjust, accept, and discard items independently</span>
+      <a href="https://github.com/ZMS-Labs/zms-canvas">ZMS Canvas source</a>
     </footer>
   </main>
   <script src="/api/config.js"></script>

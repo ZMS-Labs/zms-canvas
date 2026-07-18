@@ -73,7 +73,7 @@ async function createRichUi(options = {}) {
     },
     header(title, breadcrumb, detail = "") {
       if (output.isTTY) output.write("\u001b[2J\u001b[H");
-      output.write(`${ansi("1;36", "PenEcho Configuration")}  ${ansi("2", breadcrumb)}\n`);
+      output.write(`${ansi("1;36", "ZMS Canvas Configuration")}  ${ansi("2", breadcrumb)}\n`);
       output.write(`${ansi("1", title)}\n`);
       if (detail) output.write(`${detail}\n`);
       output.write("\n");
@@ -112,19 +112,19 @@ async function chooseModel(ui, provider, configuration) {
   const choices = provider === PROVIDERS.codex
     ? [
         { name:"Use the Codex CLI default", value:"", description:"Do not pass an explicit model." },
-        ...(current ? [{ name:`Current PenEcho model: ${current}`, value:current }] : []),
+        ...(current ? [{ name:`Current ZMS Canvas model: ${current}`, value:current }] : []),
         ...(detected ? [{ name:`Detected Codex model: ${detected}`, value:detected, description:"Read from ~/.codex/config.toml." }] : []),
-        { name:"gpt-5.6-sol (recommended)", value:"gpt-5.6-sol", description:"Best current choice for PenEcho." },
+        { name:"gpt-5.6-sol (recommended)", value:"gpt-5.6-sol", description:"Best current choice for ZMS Canvas." },
         { name:"gpt-5.5", value:"gpt-5.5", description:"Minimum recommended generation." },
         { name:"Enter a model manually…", value:"__manual__", description:"Use any model ID supported by your installed CLI." },
       ]
     : [
         { name:"Use the Claude CLI default", value:"", description:"Do not pass an explicit model." },
-        ...(current ? [{ name:`Current PenEcho model: ${current}`, value:current }] : []),
+        ...(current ? [{ name:`Current ZMS Canvas model: ${current}`, value:current }] : []),
         ...(detected ? [{ name:`Detected Claude model: ${detected}`, value:detected, description:"Read from the local Claude settings when available." }] : []),
         { name:"Opus alias (recommended for Opus 4.8 or newer)", value:"opus", description:"Uses the Opus alias resolved by your installed Claude CLI." },
-        { name:"claude-opus-4-6", value:"claude-opus-4-6", description:"Supported, but PenEcho quality may be lower." },
-        { name:"Sonnet alias", value:"sonnet", description:"Supported, but PenEcho quality may be lower." },
+        { name:"claude-opus-4-6", value:"claude-opus-4-6", description:"Supported, but ZMS Canvas quality may be lower." },
+        { name:"Sonnet alias", value:"sonnet", description:"Supported, but ZMS Canvas quality may be lower." },
         { name:"Enter a model manually…", value:"__manual__", description:"Use any model ID or alias supported by your installed CLI." },
       ];
   const selected = await ui.select("Model", uniqueChoices(choices), current || "");
@@ -247,7 +247,7 @@ async function configureSettings(ui, configuration, options) {
     traceLimit = cleanText(await ui.input("Maximum retained request records", cleanText(env.PENECHO_REQUEST_TRACE_LIMIT) || "100", numberValidator("Retention", 1, 1000, true))),
     currentHost = cleanText(env.HOST) || "0.0.0.0",
     hostChoice = await ui.select("Listening interface", uniqueChoices([
-      { name:"All network interfaces (LAN access)", value:"0.0.0.0", description:"Reach PenEcho from this computer and the local network." },
+      { name:"All network interfaces (LAN access)", value:"0.0.0.0", description:"Reach ZMS Canvas from this computer and the local network." },
       { name:"This computer only", value:"127.0.0.1", description:"Only local browser connections are accepted." },
       ...(!["0.0.0.0","127.0.0.1"].includes(currentHost) ? [{ name:`Current custom interface: ${currentHost}`, value:currentHost }] : []),
       { name:"Enter an interface manually…", value:"__manual__" },

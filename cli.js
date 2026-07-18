@@ -119,7 +119,7 @@ function resolveConfiguration(args, options = {}) {
     cwd = path.resolve(options.cwd || process.cwd()),
     home = path.resolve(options.home || os.homedir()),
     packageRoot = path.resolve(options.packageRoot || PACKAGE_ROOT),
-    defaultStateDir = sourceEnv.PENECHO_STATE_DIR ? path.resolve(cwd, sourceEnv.PENECHO_STATE_DIR) : path.join(home, ".penecho"),
+    defaultStateDir = sourceEnv.PENECHO_STATE_DIR ? path.resolve(cwd, sourceEnv.PENECHO_STATE_DIR) : path.join(home, ".zms-canvas"),
     configFile = args.config ? path.resolve(cwd, args.config) : path.join(defaultStateDir, "config.env"),
     fileEnv = loadEnvFile(configFile),
     configuredStateDir = sourceEnv.PENECHO_STATE_DIR || fileEnv.PENECHO_STATE_DIR,
@@ -321,7 +321,7 @@ async function runClaudePreflight(configuration, options = {}) {
 
 function checkNodeVersion() {
   const [major,minor]=process.versions.node.split(".",2).map(Number);
-  return Number.isInteger(major)&&Number.isInteger(minor)&&(major>18||major===18&&minor>=17);
+  return Number.isInteger(major)&&Number.isInteger(minor)&&(major>22||major===22&&minor>=5);
 }
 
 function checkAssets(packageRoot = PACKAGE_ROOT) {
@@ -431,7 +431,7 @@ async function testConfiguredProvider(configuration, options = {}) {
       executable:configuration.env.CLAUDE_CLI_PATH || "claude",
       model:normalizedEffort(configuration.env.CLAUDE_CLI_MODEL) || null,
       effort:normalizedEffort(configuration.env.AI_EFFORT) || null,
-      systemPrompt:"You are running a PenEcho configuration test. Do not use tools. Reply with OK only.",
+      systemPrompt:"You are running a ZMS Canvas configuration test. Do not use tools. Reply with OK only.",
       prompt:"Reply with OK.",
       atlasImage,
       signal:controller.signal,
@@ -448,23 +448,23 @@ async function runDoctor(args, configuration, options = {}) {
   const output = options.output || process.stdout;
   let ready = true;
   const report = (ok, message) => { output.write(`[${ok ? "ok" : "fail"}] ${message}\n`); if (!ok) ready = false; };
-  report(checkNodeVersion(), `Node.js ${process.versions.node} (18.17+ required)`);
+  report(checkNodeVersion(), `Node.js ${process.versions.node} (22.5+ required)`);
   const missingAssets = checkAssets(configuration.packageRoot);
-  report(missingAssets.length === 0, missingAssets.length ? `Missing PenEcho assets: ${missingAssets.join(", ")}` : "PenEcho assets are present");
+  report(missingAssets.length === 0, missingAssets.length ? `Missing ZMS Canvas assets: ${missingAssets.join(", ")}` : "ZMS Canvas assets are present");
   const port = await (options.portChecker || checkPortAvailable)(configuration.port, configuration.env.HOST || "0.0.0.0");
   report(port.ok, port.ok ? `Port ${configuration.port} is available` : `Port ${configuration.port} is unavailable (${port.error})`);
   try { report(true, `Unified model timeout is ${configuredTimeoutSeconds(configuration.env)} seconds`); }
   catch (error) { report(false, error.message); }
   const defaultEffort = apiEnvValue(configuration.env, "FORMAT").toLowerCase() === "anthropic" ? "medium (Anthropic API default)" : "max (OpenAI API default)";
   report(true, `Reasoning effort is ${configuration.env.AI_EFFORT || (configuration.provider === "api" ? defaultEffort : "the CLI default")}`);
-  if (configuration.provider === "codex-cli") report(true, `Model is ${configuration.env.CODEX_CLI_MODEL || "the Codex CLI default for PenEcho's isolated session"}`);
+  if (configuration.provider === "codex-cli") report(true, `Model is ${configuration.env.CODEX_CLI_MODEL || "the Codex CLI default for ZMS Canvas's isolated session"}`);
   if (configuration.provider === "claude-cli") report(true, `Model is ${configuration.env.CLAUDE_CLI_MODEL || "the Claude CLI default"}`);
 
   if (!configuration.provider) {
     report(false, `AI_PROVIDER must be ${PROVIDER_OPTIONS}`);
   } else if (configuration.provider === "api") {
     const issues = apiConfigurationIssues(configuration.env);
-    report(issues.length === 0, issues.length ? `API configuration is incomplete: ${issues.join(", ")}. Run \`penecho configure\`.` : "API configuration is ready (no paid request was made)");
+    report(issues.length === 0, issues.length ? `API configuration is incomplete: ${issues.join(", ")}. Run \`zms-canvas configure\`.` : "API configuration is ready (no paid request was made)");
   } else if (configuration.provider === "codex-cli") {
     const codex = await runCodexPreflight(configuration, { runner: options.runner });
     report(codex.ok, codex.ok ? `${codex.version}; login is ready (no model request was made)` : codex.error);
@@ -482,19 +482,19 @@ function applyConfiguration(env) {
 }
 
 function helpText() {
-  return `PenEcho ${PACKAGE_JSON.version}\n\nUsage:\n  penecho [--config FILE] [--port 3888]\n  penecho configure [--config FILE]\n  penecho doctor [--api|--codex|--claude] [--config FILE]\n  penecho --codex [--model MODEL] [--effort LEVEL]\n  penecho --claude [--model MODEL] [--effort LEVEL]\n\nOptions:\n  --config <file>   Use this configuration file instead of ~/.penecho/config.env\n  --api             Use an OpenAI-compatible or Anthropic-compatible API\n  --codex           Use the authenticated Codex CLI\n  --claude          Use the authenticated Claude CLI\n  --model <model>   Override the model for Codex or Claude CLI mode\n  --effort <level>  Override reasoning effort with a known or CLI-supported value\n  --port <port>     Override the configured listening port\n  -h, --help        Show help\n  -v, --version     Show version\n\nRun \`penecho configure\` for the interactive configuration center. Known effort values include none (Anthropic API and Claude CLI), low, medium, high, xhigh, and max; other strings are passed through.\n\nExamples:\n  penecho configure\n  penecho\n  penecho --config ./team.env\n  penecho --codex --model gpt-5.6-sol --effort xhigh\n`;
+  return `ZMS Canvas ${PACKAGE_JSON.version}\n\nUsage:\n  zms-canvas [--config FILE] [--port 3888]\n  zms-canvas configure [--config FILE]\n  zms-canvas doctor [--api|--codex|--claude] [--config FILE]\n  zms-canvas --codex [--model MODEL] [--effort LEVEL]\n  zms-canvas --claude [--model MODEL] [--effort LEVEL]\n\nOptions:\n  --config <file>   Use this configuration file instead of ~/.zms-canvas/config.env\n  --api             Use an OpenAI-compatible or Anthropic-compatible API\n  --codex           Use the authenticated Codex CLI\n  --claude          Use the authenticated Claude CLI\n  --model <model>   Override the model for Codex or Claude CLI mode\n  --effort <level>  Override reasoning effort with a known or CLI-supported value\n  --port <port>     Override the configured listening port\n  -h, --help        Show help\n  -v, --version     Show version\n\nRun \`zms-canvas configure\` for the interactive configuration center. Known effort values include none (Anthropic API and Claude CLI), low, medium, high, xhigh, and max; other strings are passed through.\n\nExamples:\n  zms-canvas configure\n  zms-canvas\n  zms-canvas --config ./team.env\n  zms-canvas --codex --model gpt-5.6-sol --effort xhigh\n`;
 }
 
 async function main(argv = process.argv.slice(2), options = {}) {
   const output = options.output || process.stdout, errorOutput = options.errorOutput || process.stderr;
   let args;
   try { args = parseArgs(argv); }
-  catch (error) { errorOutput.write(`PenEcho: ${error.message}\nRun \`penecho --help\` for usage.\n`); return 1; }
+  catch (error) { errorOutput.write(`ZMS Canvas: ${error.message}\nRun \`zms-canvas --help\` for usage.\n`); return 1; }
   if (args.help) { output.write(helpText()); return 0; }
   if (args.version) { output.write(`${PACKAGE_JSON.version}\n`); return 0; }
   let configuration;
   try { configuration = resolveConfiguration(args, options); }
-  catch (error) { errorOutput.write(`PenEcho configuration error: ${error.message}\n`); return 1; }
+  catch (error) { errorOutput.write(`ZMS Canvas configuration error: ${error.message}\n`); return 1; }
 
   const configure = async directProvider => {
     try {
@@ -510,7 +510,7 @@ async function main(argv = process.argv.slice(2), options = {}) {
       return true;
     } catch (error) {
       if (isPromptExit(error)) return true;
-      errorOutput.write(`PenEcho configuration failed: ${error.message}\n`);
+      errorOutput.write(`ZMS Canvas configuration failed: ${error.message}\n`);
       return false;
     }
   };
@@ -525,32 +525,32 @@ async function main(argv = process.argv.slice(2), options = {}) {
     const input = options.input || process.stdin,
       interactive = Boolean(options.ui?.interactive || options.allowNonInteractive || input.isTTY && output.isTTY);
     if (!interactive) {
-      errorOutput.write(`PenEcho is not configured. Run \`penecho configure${args.config ? ` --config ${args.config}` : ""}\` in a terminal first.\n`);
+      errorOutput.write(`ZMS Canvas is not configured. Run \`zms-canvas configure${args.config ? ` --config ${args.config}` : ""}\` in a terminal first.\n`);
       return 1;
     }
-    output.write(`PenEcho has no saved configuration. Opening the configuration center at ${configuration.configFile}.\n`);
+    output.write(`ZMS Canvas has no saved configuration. Opening the configuration center at ${configuration.configFile}.\n`);
     if (!await configure("")) return 1;
   }
   if (!configuration.provider) {
-    errorOutput.write(`PenEcho has no LLM source. Run \`penecho configure\` and select Claude CLI, Codex CLI, or API.\n`);
+    errorOutput.write(`ZMS Canvas has no LLM source. Run \`zms-canvas configure\` and select Claude CLI, Codex CLI, or API.\n`);
     return 1;
   }
   if (configuration.provider === "api") {
     const issues = apiConfigurationIssues(configuration.env);
     if (issues.length) {
-      errorOutput.write(`PenEcho API configuration is incomplete: ${issues.join(", ")}.\nRun \`penecho configure\` to correct it.\n`);
+      errorOutput.write(`ZMS Canvas API configuration is incomplete: ${issues.join(", ")}.\nRun \`zms-canvas configure\` to correct it.\n`);
       return 1;
     }
   } else if (configuration.provider === "codex-cli") {
     const codex = await runCodexPreflight(configuration, { runner: options.runner });
     if (!codex.ok) {
-      errorOutput.write(`PenEcho Codex check failed: ${codex.error}\nRun \`penecho doctor --codex\` for full diagnostics.\n`);
+      errorOutput.write(`ZMS Canvas Codex check failed: ${codex.error}\nRun \`zms-canvas doctor --codex\` for full diagnostics.\n`);
       return 1;
     }
   } else {
     const claude = await runClaudePreflight(configuration, { runner: options.runner });
     if (!claude.ok) {
-      errorOutput.write(`PenEcho Claude check failed: ${claude.error}\nRun \`penecho doctor --claude\` for full diagnostics.\n`);
+      errorOutput.write(`ZMS Canvas Claude check failed: ${claude.error}\nRun \`zms-canvas doctor --claude\` for full diagnostics.\n`);
       return 1;
     }
   }
@@ -562,7 +562,7 @@ async function main(argv = process.argv.slice(2), options = {}) {
 
 if (require.main === module) {
   main().then(code => { if (code) process.exitCode = code; }).catch(error => {
-    console.error(`PenEcho: ${error.message}`);
+    console.error(`ZMS Canvas: ${error.message}`);
     process.exitCode = 1;
   });
 }

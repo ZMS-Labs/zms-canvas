@@ -111,7 +111,7 @@ function startServer(env) {
     };
     child.stdout.on("data", chunk => {
       stdout += chunk.toString("utf8");
-      const match = stdout.match(/PenEcho: http:\/\/[^:]+:(\d+)/);
+      const match = stdout.match(/ZMS Canvas: http:\/\/[^:]+:(\d+)/);
       if (match) finish(null, { child, origin: `http://127.0.0.1:${match[1]}`, stateDir:env.PENECHO_STATE_DIR });
     });
     child.stderr.on("data", chunk => { stderr += chunk.toString("utf8"); });

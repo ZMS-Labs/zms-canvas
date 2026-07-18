@@ -28,7 +28,7 @@
     EFFORT_OPTIONS = ["config", ...EFFORT_LEVELS];
   const I18N = {
     en: {
-      title: "PenEcho | Handwritten AI Canvas",
+      title: "ZMS Canvas | Handwritten AI Canvas",
       tagline: "Write across twenty thousand squares and summon knowledge",
       taglineArcane: "Interdisciplinary intuition, creative synthesis, and exploratory explanation",
       taglineScifi: "Engineering, programming, system design, and future-technology analysis",
@@ -98,7 +98,7 @@
       explain: "Explain",
       plot: "Plot",
       tip: "Stylus writes · finger pans · pinch zooms · wheel zooms · middle or Alt drag pans",
-      debugTitle: "PenEcho debug",
+      debugTitle: "ZMS Canvas debug",
       openLocalLog: "Open local server log",
       history: "Local history",
       historyTitle: "Local canvas history",
@@ -164,13 +164,13 @@
     },
     zh: ZH,
   };
-  const storedLanguage = localStorage.getItem("penecho-language") || localStorage.getItem("ghostboard-language"),
-    storedTheme = localStorage.getItem("penecho-theme") || localStorage.getItem("ghostboard-theme"),
-    storedGrid = localStorage.getItem("penecho-grid") ?? localStorage.getItem("ghostboard-grid"),
-    storedResearchGrid = localStorage.getItem("penecho-research-grid"),
-    storedAutoEnabled = localStorage.getItem("penecho-auto-ai"),
-    storedAutoDelayText = localStorage.getItem("penecho-auto-delay-ms"),
-    storedAiEffortText = String(localStorage.getItem("penecho-ai-effort") || "").trim().toLowerCase(),
+  const storedLanguage = localStorage.getItem("zms-canvas-language") || localStorage.getItem("penecho-language") || localStorage.getItem("ghostboard-language"),
+    storedTheme = localStorage.getItem("zms-canvas-theme") || localStorage.getItem("penecho-theme") || localStorage.getItem("ghostboard-theme"),
+    storedGrid = localStorage.getItem("zms-canvas-grid") ?? localStorage.getItem("penecho-grid") ?? localStorage.getItem("ghostboard-grid"),
+    storedResearchGrid = localStorage.getItem("zms-canvas-research-grid") || localStorage.getItem("penecho-research-grid"),
+    storedAutoEnabled = localStorage.getItem("zms-canvas-auto-ai") || localStorage.getItem("penecho-auto-ai"),
+    storedAutoDelayText = localStorage.getItem("zms-canvas-auto-delay-ms") || localStorage.getItem("penecho-auto-delay-ms"),
+    storedAiEffortText = String(localStorage.getItem("zms-canvas-ai-effort") || localStorage.getItem("penecho-ai-effort") || "").trim().toLowerCase(),
     storedAiEffort = storedAiEffortText === "xhigh" ? "max" : storedAiEffortText,
     storedAutoDelay = storedAutoDelayText === null ? NaN : Number(storedAutoDelayText),
     initialLanguage = storedLanguage === "zh" ? "zh" : "en",
@@ -318,7 +318,7 @@
   }
   function setEffort(value) {
     state.reasoningEffort = EFFORT_OPTIONS.includes(value) ? value : "config";
-    localStorage.setItem("penecho-ai-effort", state.reasoningEffort);
+    localStorage.setItem("zms-canvas-ai-effort", state.reasoningEffort);
     updateEffortControl();
     hideEffortControl();
   }
@@ -326,7 +326,7 @@
     state.auto = enabled;
     clearTimeout(state.timer);
     state.timer = 0;
-    localStorage.setItem("penecho-auto-ai", String(enabled));
+    localStorage.setItem("zms-canvas-auto-ai", String(enabled));
     updateAutoControl();
     if (enabled) {
       schedule();
@@ -400,9 +400,9 @@
     document.body.dataset.theme = theme;
     embodiment.dataset.theme = theme;
     document.querySelector("#theme").value = theme;
-    localStorage.setItem("penecho-theme", theme);
-    if (theme === "research") state.gridVisible = localStorage.getItem("penecho-research-grid") === "true";
-    else state.gridVisible = (localStorage.getItem("penecho-grid") ?? localStorage.getItem("ghostboard-grid")) !== "false";
+    localStorage.setItem("zms-canvas-theme", theme);
+    if (theme === "research") state.gridVisible = (localStorage.getItem("zms-canvas-research-grid") || localStorage.getItem("penecho-research-grid")) === "true";
+    else state.gridVisible = (localStorage.getItem("zms-canvas-grid") ?? localStorage.getItem("penecho-grid") ?? localStorage.getItem("ghostboard-grid")) !== "false";
     updateThemeCopy();
     updateEmbodimentLabel();
     updateGridButton();
@@ -700,7 +700,7 @@
     copy.getContext("2d").drawImage(source, 0, 0);
     return copy;
   }
-  const SNAPSHOT_DB = "penecho-canvas-history",
+  const SNAPSHOT_DB = "zms-canvas-history",
     SNAPSHOT_STORE = "snapshots",
     SNAPSHOT_TILE_STORE = "snapshot-tiles";
   let snapshotDbPromise = null,
@@ -833,7 +833,7 @@
   function exportFilename() {
     const now = new Date(),
       pad = (value) => String(value).padStart(2, "0");
-    return `penecho-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.png`;
+    return `zms-canvas-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.png`;
   }
   async function exportCanvasPng() {
     const button = document.querySelector("#exportPngBtn");
@@ -3705,7 +3705,7 @@
   };
   document.querySelector("#autoDelayRange").oninput = (event) => {
     state.autoDelayMs = Math.round(Math.max(0, Math.min(10, Number(event.target.value))) * 1000);
-    localStorage.setItem("penecho-auto-delay-ms", String(state.autoDelayMs));
+    localStorage.setItem("zms-canvas-auto-delay-ms", String(state.autoDelayMs));
     updateAutoControl();
     schedule();
     keepAutoDelayControlOpen();
@@ -3729,14 +3729,14 @@
   document.querySelectorAll("[data-language]").forEach((button) => {
     button.onclick = () => {
       state.language = button.dataset.language;
-      localStorage.setItem("penecho-language", state.language);
+      localStorage.setItem("zms-canvas-language", state.language);
       applyLanguage();
     };
   });
   document.querySelector("#theme").onchange = (e) => applyTheme(e.target.value);
   document.querySelector("#gridToggle").onclick = () => {
     state.gridVisible = !state.gridVisible;
-    localStorage.setItem(state.theme === "research" ? "penecho-research-grid" : "penecho-grid", String(state.gridVisible));
+    localStorage.setItem(state.theme === "research" ? "zms-canvas-research-grid" : "zms-canvas-grid", String(state.gridVisible));
     updateGridButton();
     requestRender();
   };

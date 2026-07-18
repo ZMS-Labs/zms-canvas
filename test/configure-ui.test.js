@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { discoverConfiguredModel, runConfigureMenu } = require("../configure-ui.js");
+const { createRichUi, discoverConfiguredModel, runConfigureMenu } = require("../configure-ui.js");
 
 function temporaryDirectory() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "penecho-configure-ui-"));
@@ -30,6 +30,16 @@ function uiScript({ selections = [], inputs = [], confirms = [], passwords = [] 
     selects,
   };
 }
+
+test("the configuration UI identifies ZMS Canvas", async () => {
+  let output = "";
+  const ui = await createRichUi({
+    input:{ isTTY:false },
+    output:{ isTTY:false, write:value => { output += value; } },
+  });
+  ui.header("Settings", "Main menu");
+  assert.match(output, /ZMS Canvas Configuration/);
+});
 
 test("main menu provides LLM source and Settings navigation with a parent return", async () => {
   const directory = temporaryDirectory(), configuration = {
