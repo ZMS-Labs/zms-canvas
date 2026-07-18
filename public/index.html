@@ -130,6 +130,10 @@
           <button data-action="redo" class="icon-button" data-i18n-aria="redo" aria-label="Redo" data-i18n-title="redo" title="Redo">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a6 6 0 0 0-6 6"/></svg>
           </button>
+          <div id="notebookSyncStatus" class="notebook-sync-status" role="status" aria-live="polite" aria-atomic="true" data-state="saved" hidden>
+            <span class="notebook-sync-signal" aria-hidden="true"></span>
+            <span data-notebook-sync-copy>Saved</span>
+          </div>
           <button id="fullscreenBtn" class="icon-button" type="button" data-i18n-aria="fullscreen" aria-label="Fullscreen" data-i18n-title="fullscreen" title="Fullscreen" aria-pressed="false">
             <svg class="fullscreen-enter" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
             <svg class="fullscreen-exit" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8H3V3M16 8h5V3M8 16H3v5M16 16h5v5"/></svg>
@@ -159,13 +163,26 @@
         <div><span class="history-kicker">ZMS Canvas</span><h2 id="historyTitle" data-i18n="historyTitle">Local canvas history</h2></div>
         <button id="historyClose" type="button" data-i18n-aria="closeHistory" aria-label="Close history" data-i18n-title="closeHistory" title="Close history">×</button>
       </header>
-      <p data-i18n="historyDescription">Stores confirmed canvas content only. Unconfirmed AI drafts are excluded.</p>
-      <div class="history-save-row">
-        <input id="historyName" type="text" maxlength="48" data-i18n-placeholder="snapshotName" placeholder="Snapshot name (optional)" data-i18n-aria="snapshotName" aria-label="Snapshot name">
-        <button id="historySave" type="button" data-i18n="saveSnapshot">Save canvas</button>
-        <button id="historyNew" type="button" data-i18n="newCanvas">New</button>
-      </div>
-      <div id="historyList" class="history-list" aria-live="polite"></div>
+      <p id="historyDescription" data-i18n="historyDescription">Stores confirmed canvas content only. Unconfirmed AI drafts are excluded.</p>
+      <section id="syncedNotebookSection" class="history-source synced-source" aria-labelledby="syncedNotebooksTitle" hidden>
+        <header class="history-source-heading">
+          <div><span class="history-source-label" data-i18n="serverSource">Server</span><h3 id="syncedNotebooksTitle" data-i18n="syncedNotebooksTitle">Synced notebooks</h3></div>
+        </header>
+        <p data-i18n="syncedNotebooksDescription">Saved revisions are available on your connected devices.</p>
+        <div id="syncedNotebooks" class="history-list synced-notebook-list" aria-live="polite"></div>
+      </section>
+      <section id="deviceSnapshots" class="history-source device-source" aria-labelledby="deviceSnapshotsTitle">
+        <header class="history-source-heading">
+          <div><span class="history-source-label" data-i18n="deviceSource">Device</span><h3 id="deviceSnapshotsTitle" data-i18n="deviceSnapshotsTitle">On this device</h3></div>
+        </header>
+        <p data-i18n="deviceSnapshotsDescription">Local snapshots stay on this device until you copy or delete them.</p>
+        <div class="history-save-row">
+          <input id="historyName" type="text" maxlength="48" data-i18n-placeholder="snapshotName" placeholder="Snapshot name (optional)" data-i18n-aria="snapshotName" aria-label="Snapshot name">
+          <button id="historySave" type="button" data-i18n="saveSnapshot">Save canvas</button>
+          <button id="historyNew" type="button" data-i18n="newCanvas">New</button>
+        </div>
+        <div id="historyList" class="history-list" aria-live="polite"></div>
+      </section>
     </aside>
 
     <dialog id="newCanvasDialog" class="new-canvas-dialog" aria-labelledby="newCanvasTitle">
@@ -231,6 +248,7 @@
   <script src="locales/zh.js"></script>
   <script src="draw.js"></script>
   <script src="selection.js"></script>
+  <script src="notebooks.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
