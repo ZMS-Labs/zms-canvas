@@ -189,6 +189,8 @@ test("Codex CLI mode starts with no extra access or model-provider settings", { 
     const localPage=await fetch(origin);
     assert.equal(localPage.status,200);
     assert.ok(localPage.headers.get("set-cookie"));
+    const config=await fetch(`${origin}/api/config`).then(response=>response.json());
+    assert.equal(config.aiEffort,"config");
   } finally { await stopServer(child); }
 });
 
@@ -199,14 +201,19 @@ test("Claude CLI mode sends the canvas to the authenticated local CLI with the s
   try {
     const page=await fetch(origin),cookie=page.headers.get("set-cookie")?.split(";",1)[0];
     assert.ok(cookie);
-    const response=await fetch(`${origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json",Origin:origin,Cookie:cookie},body:JSON.stringify(validPayload())}),body=await response.json(),saved=JSON.parse(await fs.promises.readFile(record,"utf8"));
+    const payload=validPayload();payload.reasoningEffort="high";
+    const response=await fetch(`${origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json",Origin:origin,Cookie:cookie},body:JSON.stringify(payload)}),body=await response.json(),saved=JSON.parse(await fs.promises.readFile(record,"utf8"));
     assert.equal(response.status,200);
     assert.equal(body.message,"hello");
     assert.equal(saved.mediaType,"image/webp");
     assert.equal(saved.signature,"RIFF");
     assert.equal(saved.args[saved.args.indexOf("--model")+1],"sonnet");
-    assert.equal(saved.args[saved.args.indexOf("--effort")+1],"max");
+    assert.equal(saved.args[saved.args.indexOf("--effort")+1],"high");
     assert.equal(saved.args[saved.args.indexOf("--tools")+1],"");
+    const configuredResponse=await fetch(`${origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json",Origin:origin,Cookie:cookie},body:JSON.stringify(validPayload())});
+    assert.equal(configuredResponse.status,200);
+    const configured=JSON.parse(await fs.promises.readFile(record,"utf8"));
+    assert.equal(configured.args[configured.args.indexOf("--effort")+1],"max");
   } finally {
     await stopServer(child);
     await fs.promises.rm(directory,{recursive:true,force:true});
@@ -215,17 +222,22 @@ test("Claude CLI mode sends the canvas to the authenticated local CLI with the s
 
 test("Codex CLI mode writes the configured WebP image with a .webp extension", { timeout:20000 }, async () => {
   const directory=await fs.promises.mkdtemp(path.join(os.tmpdir(),"penecho-server-codex-webp-")),fakeCli=path.join(directory,"fake-codex.js"),record=path.join(directory,"record.json");
-  await fs.promises.writeFile(fakeCli, `"use strict";const fs=require("node:fs"),path=require("node:path"),args=process.argv.slice(2),image=args[args.indexOf("-i")+1],buffer=fs.readFileSync(image),answer='{"intent":"answer","observedText":"hi","message":"hello","commands":[]}';fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({extension:path.extname(image),signature:buffer.toString("ascii",0,4),json:args.includes("--json")}));process.stdout.write(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:answer}})+"\\n");process.stdout.write(JSON.stringify({type:"turn.completed",usage:{}})+"\\n");setInterval(()=>{},1000);\n`);
+  await fs.promises.writeFile(fakeCli, `"use strict";const fs=require("node:fs"),path=require("node:path"),args=process.argv.slice(2),image=args[args.indexOf("-i")+1],buffer=fs.readFileSync(image),answer='{"intent":"answer","observedText":"hi","message":"hello","commands":[]}';fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({args,extension:path.extname(image),signature:buffer.toString("ascii",0,4),json:args.includes("--json")}));process.stdout.write(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:answer}})+"\\n");process.stdout.write(JSON.stringify({type:"turn.completed",usage:{}})+"\\n");setInterval(()=>{},1000);\n`);
   const {child,origin}=await startServer(serverEnv({CODEX_CLI_PATH:fakeCli}));
   try {
-    const page=await fetch(origin),cookie=page.headers.get("set-cookie")?.split(";",1)[0];
-    const started=Date.now(),response=await fetch(`${origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json",Origin:origin,Cookie:cookie},body:JSON.stringify(validPayload())}),body=await response.json(),elapsedMs=Date.now()-started,saved=JSON.parse(await fs.promises.readFile(record,"utf8"));
+    const page=await fetch(origin),cookie=page.headers.get("set-cookie")?.split(";",1)[0],payload=validPayload();payload.reasoningEffort="max";
+    const started=Date.now(),response=await fetch(`${origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json",Origin:origin,Cookie:cookie},body:JSON.stringify(payload)}),body=await response.json(),elapsedMs=Date.now()-started,saved=JSON.parse(await fs.promises.readFile(record,"utf8"));
     assert.equal(response.status,200);
     assert.equal(body.message,"hello");
     assert.ok(elapsedMs<1500,`streamed server response took ${elapsedMs}ms`);
     assert.equal(saved.extension,".webp");
     assert.equal(saved.signature,"RIFF");
     assert.equal(saved.json,true);
+    assert.ok(saved.args.includes('model_reasoning_effort="xhigh"'));
+    const configuredPayload=validPayload(),configuredResponse=await fetch(`${origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json",Origin:origin,Cookie:cookie},body:JSON.stringify(configuredPayload)});
+    assert.equal(configuredResponse.status,200);
+    const configured=JSON.parse(await fs.promises.readFile(record,"utf8"));
+    assert.ok(!configured.args.some(argument=>argument.startsWith("model_reasoning_effort=")));
   } finally {
     await stopServer(child);
     await fs.promises.rm(directory,{recursive:true,force:true});
@@ -243,13 +255,25 @@ test("Claude CLI failures expose the useful upstream diagnostic", { timeout:2000
   } finally { await stopServer(child); await fs.promises.rm(directory,{recursive:true,force:true}); }
 });
 
-test("global API effort maps to OpenAI and Anthropic request fields", { timeout:20000 }, async () => {
+test("page reasoning effort maps to OpenAI and Anthropic request fields", { timeout:20000 }, async () => {
   const openai=await startApiServer(),openaiServer=await startServer(apiServerEnv(openai.origin));
   try {
-    const response=await fetch(`${openaiServer.origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(validPayload())});
-    assert.equal(response.status,200);
-    assert.equal(JSON.parse(openai.requests[0]).reasoning_effort,"max");
+    const disabledPayload=validPayload();disabledPayload.reasoningEffort="none";
+    const disabledResponse=await fetch(`${openaiServer.origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(disabledPayload)});
+    assert.equal(disabledResponse.status,200);
+    assert.equal(JSON.parse(openai.requests[0]).reasoning_effort,"none");
+    const maxPayload=validPayload();maxPayload.reasoningEffort="max";
+    const maxResponse=await fetch(`${openaiServer.origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(maxPayload)});
+    assert.equal(maxResponse.status,200);
+    assert.equal(JSON.parse(openai.requests[1]).reasoning_effort,"xhigh");
   } finally { await stopServer(openaiServer.child); await new Promise(resolve=>openai.server.close(resolve)); }
+
+  const configuredOpenai=await startApiServer(),configuredOpenaiServer=await startServer(apiServerEnv(configuredOpenai.origin,{AI_EFFORT:"future-tier"}));
+  try {
+    const response=await fetch(`${configuredOpenaiServer.origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(validPayload())});
+    assert.equal(response.status,200);
+    assert.equal(JSON.parse(configuredOpenai.requests[0]).reasoning_effort,"future-tier");
+  } finally { await stopServer(configuredOpenaiServer.child); await new Promise(resolve=>configuredOpenai.server.close(resolve)); }
 
   const anthropic=await startApiServer(undefined,{format:"anthropic"}),anthropicServer=await startServer(apiServerEnv(anthropic.origin,{AI_API_FORMAT:"anthropic",AI_API_URL:anthropic.origin,AI_EFFORT:"max"}));
   try {
@@ -265,9 +289,10 @@ test("global API effort maps to OpenAI and Anthropic request fields", { timeout:
     assert.match(request.system,/Reserve sufficient output budget for one complete valid JSON response/);
   } finally { await stopServer(anthropicServer.child); await new Promise(resolve=>anthropic.server.close(resolve)); }
 
-  const disabled=await startApiServer(undefined,{format:"anthropic"}),disabledServer=await startServer(apiServerEnv(disabled.origin,{AI_API_FORMAT:"anthropic",AI_API_URL:disabled.origin,AI_EFFORT:"none"}));
+  const disabled=await startApiServer(undefined,{format:"anthropic"}),disabledServer=await startServer(apiServerEnv(disabled.origin,{AI_API_FORMAT:"anthropic",AI_API_URL:disabled.origin,AI_EFFORT:"max"}));
   try {
-    const response=await fetch(`${disabledServer.origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(validPayload())});
+    const payload=validPayload();payload.reasoningEffort="none";
+    const response=await fetch(`${disabledServer.origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     assert.equal(response.status,200);
     const request=JSON.parse(disabled.requests[0]);
     assert.deepEqual(request.thinking,{type:"disabled"});
@@ -675,6 +700,10 @@ test("debug persistence redacts recognized and generated text", { timeout: 20000
     malformed.userAction = { value: marker };
     const malformedResponse = await fetch(`${origin}/api/ai/command`, { method: "POST", headers: { "Content-Type": "application/json", Origin: origin, Cookie: cookie }, body: JSON.stringify(malformed) });
     assert.equal(malformedResponse.status, 400);
+    const invalidEffort = validPayload();
+    invalidEffort.reasoningEffort = marker;
+    const invalidEffortResponse = await fetch(`${origin}/api/ai/command`, { method: "POST", headers: { "Content-Type": "application/json", Origin: origin, Cookie: cookie }, body: JSON.stringify(invalidEffort) });
+    assert.equal(invalidEffortResponse.status, 400);
     const extra = validPayload(), nested = { value: marker };
     extra.atlasSize.extra = nested;
     extra.changedBox.extra = nested;
@@ -728,7 +757,7 @@ test("API mode uses one configured key without probes or fallback credentials", 
   const server=fs.readFileSync(path.join(ROOT,"server.js"),"utf8"),cli=fs.readFileSync(path.join(ROOT,"cli.js"),"utf8"),configure=fs.readFileSync(path.join(ROOT,"configure-ui.js"),"utf8");
   for(const source of [server,cli,configure])assert.doesNotMatch(source,/OPENAI_PRO_API_KEY/);
   assert.doesNotMatch(server,/api-health|api-selection|api-runtime-failure|refreshApiConfig|testApiKey|HEALTH_INTERVAL|HEALTH_TIMEOUT/);
-  assert.match(server,/providerRequest\(API_KEY,MODEL,text,atlasImage\)/);
+  assert.match(server,/providerRequest\(API_KEY,MODEL,text,atlasImage,effort\)/);
 });
 
 test("client and server contain no aggregate draft rejection budget", () => {

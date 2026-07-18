@@ -28,6 +28,7 @@ const LOG_FILE = path.join(LOG_DIR, "penecho.log");
 const REQUEST_TRACE_DIR = path.join(LOG_DIR, "requests");
 const MAX_LOG = 2 * 1024 * 1024;
 const CANVAS_SIZE = 20000;
+const UI_EFFORTS = new Set(["config", "none", "low", "medium", "high", "max"]);
 const debugRate = new Map();
 const MODEL = firstNonEmpty(process.env.AI_API_MODEL, process.env.OPENAI_MODEL);
 const API = resolveApiConfig(API_BASE_URL, API_FORMAT);
@@ -89,6 +90,28 @@ function normalizeAiImageFormat(value) {
   return["webp","png"].includes(format)?format:null;
 }
 
+function normalizeUiEffort(value) {
+  const effort=String(value||"").trim().toLowerCase();
+  if(effort==="xhigh")return"max";
+  return UI_EFFORTS.has(effort)?effort:null;
+}
+
+function configuredUiEffort() {
+  const configured = AI_PROVIDER === "api" ? API_EFFORT : AI_EFFORT,
+    normalized = normalizeUiEffort(configured);
+  return normalized && normalized !== "config" ? normalized : "config";
+}
+
+function providerEffort(uiEffort) {
+  const selected = normalizeUiEffort(uiEffort),
+    configured = AI_PROVIDER === "api" ? API_EFFORT : AI_EFFORT,
+    effort = !selected || selected === "config" ? configured : selected;
+  if (!effort) return null;
+  if (selected === "config") return effort;
+  if(effort!=="max")return effort;
+  return AI_PROVIDER==="codex-cli"||AI_PROVIDER==="api"&&API?.format==="openai"?"xhigh":"max";
+}
+
 function optionalBoolean(value) {
   if (value === undefined || String(value).trim() === "") return false;
   const normalized = String(value).trim().toLowerCase();
@@ -110,7 +133,7 @@ function providerConfigurationError() {
   return null;
 }
 
-function providerRequest(key, model, text, atlasImage = null) {
+function providerRequest(key, model, text, atlasImage = null, effort = API_EFFORT) {
   if (API.format === "anthropic") {
     const image = atlasImage ? imageDataUrlParts(atlasImage) : null;
     const content = atlasImage
@@ -119,9 +142,9 @@ function providerRequest(key, model, text, atlasImage = null) {
           { type: "image", source: { type: "base64", media_type: image.mimeType, data: image.base64 } },
         ]
       : text;
-    const effortParameters = anthropicEffortParameters(API_EFFORT, Boolean(atlasImage)),
-      maxTokens = atlasImage ? anthropicResponseMaxTokens(API_EFFORT) : 10,
-      system = atlasImage ? anthropicSystemPrompt(API_EFFORT) : null;
+    const effortParameters = anthropicEffortParameters(effort, Boolean(atlasImage)),
+      maxTokens = atlasImage ? anthropicResponseMaxTokens(effort) : 10,
+      system = atlasImage ? anthropicSystemPrompt(effort) : null;
     return {
       headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({ model, max_tokens:maxTokens, ...(!atlasImage ? { temperature:0 } : {}), ...effortParameters, ...(system ? { system } : {}), messages: [{ role: "user", content }] }),
@@ -132,7 +155,7 @@ function providerRequest(key, model, text, atlasImage = null) {
     : [{ role: "user", content: text }];
   return {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model, reasoning_effort: API_EFFORT, ...(atlasImage ? { temperature: 0.15, response_format: { type: "json_object" } } : { max_tokens: 10, temperature: 0 }), messages }),
+    body: JSON.stringify({ model, reasoning_effort: effort, ...(atlasImage ? { temperature: 0.15, response_format: { type: "json_object" } } : { max_tokens: 10, temperature: 0 }), messages }),
   };
 }
 
@@ -218,8 +241,8 @@ function validPayload(p) {
   const validImage = value => typeof value === "string" && value.length <= 8 * 1024 * 1024 && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
   const image = validImage(p?.atlasImage);
   const validBox = b => b && typeof b === "object" && [b.x,b.y,b.w,b.h].every(Number.isFinite) && b.x >= 0 && b.y >= 0 && b.w > 0 && b.h > 0 && b.x + b.w <= CANVAS_SIZE && b.y + b.h <= CANVAS_SIZE;
-  const grid=p?.hotspotGrid,size=p?.atlasSize,source=p?.sourceRect,capture=p?.captureRect,contains=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y&&inner.x+inner.w<=outer.x+outer.w+.001&&inner.y+inner.h<=outer.y+outer.h+.001,validGrid=grid&&grid.columns===8&&grid.rows===8&&grid.order==="oldest-to-newest"&&Array.isArray(grid.hotspots)&&grid.hotspots.length<=64&&grid.hotspots.every(h=>Array.isArray(h?.cell)&&h.cell.length===2&&Number.isInteger(h.cell[0])&&Number.isInteger(h.cell[1])&&h.cell[0]>=0&&h.cell[0]<8&&h.cell[1]>=0&&h.cell[1]<8&&h.imageRect&&[h.imageRect.x,h.imageRect.y,h.imageRect.w,h.imageRect.h].every(Number.isFinite)&&h.imageRect.x>=0&&h.imageRect.y>=0&&h.imageRect.w>0&&h.imageRect.h>0&&h.imageRect.x+h.imageRect.w<=size?.w+1&&h.imageRect.y+h.imageRect.h<=size?.h+1),validGeometry=validBox(p?.changedBox)&&validBox(p?.visibleRect)&&validBox(capture)&&validBox(source)&&contains(p.visibleRect,capture)&&contains(capture,source)&&contains(source,p.changedBox),validSize=validGeometry&&Number.isFinite(p.imageScale)&&p.imageScale>0&&p.imageScale<=1&&Number.isInteger(size?.w)&&Number.isInteger(size?.h)&&size.w>0&&size.w<=2048&&size.h>0&&size.h<=1536&&size.w===Math.ceil(source.w*p.imageScale)&&size.h===Math.ceil(source.h*p.imageScale),inset=p?.focusInset,validInset=inset===null||inset===undefined||(validBox(inset.sourceRect)&&contains(source,inset.sourceRect)&&inset.imageRect&&[inset.imageRect.x,inset.imageRect.y,inset.imageRect.w,inset.imageRect.h].every(Number.isFinite)&&inset.imageRect.x>=0&&inset.imageRect.y>=0&&inset.imageRect.w>0&&inset.imageRect.h>0&&inset.imageRect.x+inset.imageRect.w<=size?.w&&inset.imageRect.y+inset.imageRect.h<=size?.h&&Number.isFinite(inset.imageScale)&&inset.imageScale>p.imageScale&&inset.imageScale<=3),validTheme=Object.hasOwn(THEME_PERSONAS,p?.uiTheme),validPersona=validTheme&&p?.persona===THEME_PERSONAS[p.uiTheme],validAction=DEBUG_ACTIONS.has(p?.userAction),validTrigger=p?.trigger==="user_paused"&&p.userAction==="auto"||p?.trigger==="manual"&&validAction&&p.userAction!=="auto";
-  return p && typeof p === "object" && p.canvasSize?.w === CANVAS_SIZE && p.canvasSize?.h === CANVAS_SIZE && validGeometry && validSize && validGrid && validInset && validTheme && validPersona && validAction && validTrigger && image;
+  const grid=p?.hotspotGrid,size=p?.atlasSize,source=p?.sourceRect,capture=p?.captureRect,contains=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y&&inner.x+inner.w<=outer.x+outer.w+.001&&inner.y+inner.h<=outer.y+outer.h+.001,validGrid=grid&&grid.columns===8&&grid.rows===8&&grid.order==="oldest-to-newest"&&Array.isArray(grid.hotspots)&&grid.hotspots.length<=64&&grid.hotspots.every(h=>Array.isArray(h?.cell)&&h.cell.length===2&&Number.isInteger(h.cell[0])&&Number.isInteger(h.cell[1])&&h.cell[0]>=0&&h.cell[0]<8&&h.cell[1]>=0&&h.cell[1]<8&&h.imageRect&&[h.imageRect.x,h.imageRect.y,h.imageRect.w,h.imageRect.h].every(Number.isFinite)&&h.imageRect.x>=0&&h.imageRect.y>=0&&h.imageRect.w>0&&h.imageRect.h>0&&h.imageRect.x+h.imageRect.w<=size?.w+1&&h.imageRect.y+h.imageRect.h<=size?.h+1),validGeometry=validBox(p?.changedBox)&&validBox(p?.visibleRect)&&validBox(capture)&&validBox(source)&&contains(p.visibleRect,capture)&&contains(capture,source)&&contains(source,p.changedBox),validSize=validGeometry&&Number.isFinite(p.imageScale)&&p.imageScale>0&&p.imageScale<=1&&Number.isInteger(size?.w)&&Number.isInteger(size?.h)&&size.w>0&&size.w<=2048&&size.h>0&&size.h<=1536&&size.w===Math.ceil(source.w*p.imageScale)&&size.h===Math.ceil(source.h*p.imageScale),inset=p?.focusInset,validInset=inset===null||inset===undefined||(validBox(inset.sourceRect)&&contains(source,inset.sourceRect)&&inset.imageRect&&[inset.imageRect.x,inset.imageRect.y,inset.imageRect.w,inset.imageRect.h].every(Number.isFinite)&&inset.imageRect.x>=0&&inset.imageRect.y>=0&&inset.imageRect.w>0&&inset.imageRect.h>0&&inset.imageRect.x+inset.imageRect.w<=size?.w&&inset.imageRect.y+inset.imageRect.h<=size?.h&&Number.isFinite(inset.imageScale)&&inset.imageScale>p.imageScale&&inset.imageScale<=3),validTheme=Object.hasOwn(THEME_PERSONAS,p?.uiTheme),validPersona=validTheme&&p?.persona===THEME_PERSONAS[p.uiTheme],validAction=DEBUG_ACTIONS.has(p?.userAction),validEffort=p?.reasoningEffort===undefined||UI_EFFORTS.has(p.reasoningEffort),validTrigger=p?.trigger==="user_paused"&&p.userAction==="auto"||p?.trigger==="manual"&&validAction&&p.userAction!=="auto";
+  return p && typeof p === "object" && p.canvasSize?.w === CANVAS_SIZE && p.canvasSize?.h === CANVAS_SIZE && validGeometry && validSize && validGrid && validInset && validTheme && validPersona && validAction && validEffort && validTrigger && image;
 }
 function canonicalPayload(p) {
   const box = value => ({ x:value.x, y:value.y, w:value.w, h:value.h });
@@ -235,6 +258,7 @@ function canonicalPayload(p) {
     hotspotGrid:{ columns:8, rows:8, order:"oldest-to-newest", attention:"use only to refine reading order inside latestInput.imageRect", hotspots:p.hotspotGrid.hotspots.map(h=>({ cell:[h.cell[0],h.cell[1]], imageRect:box(h.imageRect) })) },
     trigger:p.trigger,
     userAction:p.userAction,
+    reasoningEffort:p.reasoningEffort===undefined?"config":normalizeUiEffort(p.reasoningEffort)||"config",
     canvasSize:{ w:CANVAS_SIZE, h:CANVAS_SIZE },
     uiTheme:p.uiTheme,
     persona:THEME_PERSONAS[p.uiTheme],
@@ -444,14 +468,14 @@ function traceSafeValue(value, atlasImage, atlasBase64, atlasFile) {
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,traceSafeValue(item,atlasImage,atlasBase64,atlasFile)]));
   return value;
 }
-function tracedOutboundRequest(modelInput, atlasImage, retryInstruction="") {
+function tracedOutboundRequest(modelInput, atlasImage, retryInstruction="", effort = configuredUiEffort()) {
   const text=modelRequestText(modelInput,retryInstruction);
   const image=imageDataUrlParts(atlasImage);
   if (AI_PROVIDER === "codex-cli") return {
     provider:"codex-cli",
     executable:CODEX_CLI.executable,
     model:CODEX_CLI.model||"configured-default",
-    effort:CODEX_CLI.effort||"cli-default",
+    effort,
     prompt:codexModelPrompt(text),
     image:image?.file||null,
     imageMimeType:image?.mimeType||null,
@@ -461,7 +485,7 @@ function tracedOutboundRequest(modelInput, atlasImage, retryInstruction="") {
     provider:"claude-cli",
     executable:CLAUDE_CLI.executable,
     model:CLAUDE_CLI.model||"configured-default",
-    effort:CLAUDE_CLI.effort||"cli-default",
+    effort,
     systemPrompt:localCliSystemPrompt(),
     prompt:localCliRequestPrompt(text),
     inputFormat:"stream-json",
@@ -470,7 +494,7 @@ function tracedOutboundRequest(modelInput, atlasImage, retryInstruction="") {
     imageMimeType:image?.mimeType||null,
     imageBytes:image?.bytes||null,
   };
-  const request=providerRequest("<redacted>",MODEL,text,atlasImage),
+  const request=providerRequest("<redacted>",MODEL,text,atlasImage,effort),
     headers=Object.fromEntries(Object.entries(request.headers).map(([name,value])=>[name,/authorization|api-key/i.test(name)?"<redacted>":value])),
     atlasBase64=image.base64,
     body=traceSafeValue(JSON.parse(request.body),atlasImage,atlasBase64,image.file);
@@ -503,7 +527,7 @@ function updateRequestTrace(trace, mutate) {
   try { mutate(trace.data);writeRequestTrace(trace); }
   catch { log({type:"request-trace-error",requestId:trace.data?.requestId,error:"write-failed"}); }
 }
-function beginRequestTrace(requestId, ip, payload, modelInput, imageTransport) {
+function beginRequestTrace(requestId, ip, payload, modelInput, imageTransport, effort) {
   if(!REQUEST_TRACE_ENABLED)return null;
   try {
     const startedAt=new Date().toISOString(),name=`${String(Date.now()).padStart(13,"0")}-${requestId}`,directory=requestTraceChild(name);
@@ -517,7 +541,8 @@ function beginRequestTrace(requestId, ip, payload, modelInput, imageTransport) {
       startedAt,
       updatedAt:startedAt,
       status:"in-flight",
-      client:{ip,trigger:payload.trigger,userAction:payload.userAction,uiTheme:payload.uiTheme},
+      client:{ip,trigger:payload.trigger,userAction:payload.userAction,reasoningEffort:payload.reasoningEffort,uiTheme:payload.uiTheme},
+      providerEffort:effort,
       image:{file:imageTransport.source.file,mimeType:imageTransport.source.mimeType,bytes:imageTransport.source.bytes,preferredFile:imageTransport.preferred.file,preferredMimeType:imageTransport.preferred.mimeType,preferredBytes:imageTransport.preferred.bytes,encoding:imageTransport.encoding,fallback:null,atlasSize:payload.atlasSize,sourceRect:payload.sourceRect,imageScale:payload.imageScale,latestInput:modelInput.latestInput,focusInset:modelInput.focusInset,hotspots:payload.hotspotGrid.hotspots.length},
       modelInput,
       attempts:[],
@@ -529,8 +554,8 @@ function beginRequestTrace(requestId, ip, payload, modelInput, imageTransport) {
     return trace;
   } catch { log({type:"request-trace-error",requestId,error:"start-failed"});return null; }
 }
-function traceAttemptStarted(trace, attempt, modelInput, atlasImage, retryInstruction, transportReason) {
-  updateRequestTrace(trace,data=>data.attempts.push({attempt,startedAt:new Date().toISOString(),completedAt:null,retryInstruction:retryInstruction||null,transportReason:transportReason||null,outbound:tracedOutboundRequest(modelInput,atlasImage,retryInstruction),response:null,error:null}));
+function traceAttemptStarted(trace, attempt, modelInput, atlasImage, retryInstruction, effort, transportReason) {
+  updateRequestTrace(trace,data=>data.attempts.push({attempt,startedAt:new Date().toISOString(),completedAt:null,retryInstruction:retryInstruction||null,transportReason:transportReason||null,outbound:tracedOutboundRequest(modelInput,atlasImage,retryInstruction,effort),response:null,error:null}));
 }
 function traceAttemptResponse(trace, attempt, model) {
   updateRequestTrace(trace,data=>{
@@ -551,10 +576,10 @@ function traceAttemptError(trace, attempt, error) {
     record.error=traceErrorDetails(error);
   });
 }
-async function callModelWithTrace(trace, attempt, modelInput, atlasImage, retryInstruction, signal, transportReason=null) {
-  traceAttemptStarted(trace,attempt,modelInput,atlasImage,retryInstruction,transportReason);
+async function callModelWithTrace(trace, attempt, modelInput, atlasImage, retryInstruction, effort, signal, transportReason=null) {
+  traceAttemptStarted(trace,attempt,modelInput,atlasImage,retryInstruction,effort,transportReason);
   try {
-    const model=await callModel(modelInput,atlasImage,retryInstruction,signal);
+    const model=await callModel(modelInput,atlasImage,retryInstruction,effort,signal);
     traceAttemptResponse(trace,attempt,model);
     return model;
   } catch(error) {
@@ -573,7 +598,7 @@ function completeRequestTrace(trace, status, httpStatus, body=null, error=null) 
     data.error=error?traceErrorDetails(error):null;
   });
 }
-async function callModel(modelInput, atlasImage, retryInstruction="", externalSignal = null) {
+async function callModel(modelInput, atlasImage, retryInstruction="", effort, externalSignal = null) {
   const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
   const abortFromClient = () => controller.abort();
   if (externalSignal?.aborted) controller.abort();
@@ -583,9 +608,9 @@ async function callModel(modelInput, atlasImage, retryInstruction="", externalSi
     if (LOCAL_CLI) {
       try {
         const content = AI_PROVIDER === "codex-cli"
-          ? await callCodexCli({ ...CODEX_CLI, prompt:codexModelPrompt(text), atlasImage, signal:controller.signal })
-          : await callClaudeCli({ ...CLAUDE_CLI, systemPrompt:localCliSystemPrompt(), prompt:localCliRequestPrompt(text), atlasImage, signal:controller.signal });
-        try { return {content,result:parsedModelResponse(content),status:200,provider:AI_PROVIDER,model:LOCAL_CLI.model||"configured-default",effort:LOCAL_CLI.effort||"cli-default",upstream:null}; }
+          ? await callCodexCli({ ...CODEX_CLI, effort, prompt:codexModelPrompt(text), atlasImage, signal:controller.signal })
+          : await callClaudeCli({ ...CLAUDE_CLI, effort, systemPrompt:localCliSystemPrompt(), prompt:localCliRequestPrompt(text), atlasImage, signal:controller.signal });
+        try { return {content,result:parsedModelResponse(content),status:200,provider:AI_PROVIDER,model:LOCAL_CLI.model||"configured-default",effort,upstream:null}; }
         catch(error){error.upstream={status:200,rawContent:content};throw error}
       } catch (error) {
         if (DEBUG_ARTIFACTS && error.diagnostic) log({type:`${AI_PROVIDER}-error`,error:"process-failed",diagnosticBytes:Buffer.byteLength(error.diagnostic)});
@@ -593,7 +618,7 @@ async function callModel(modelInput, atlasImage, retryInstruction="", externalSi
         throw error;
       }
     }
-    const response=await fetch(API.endpoint,{signal:controller.signal,method:"POST",redirect:"error",...providerRequest(API_KEY,MODEL,text,atlasImage)});
+    const response=await fetch(API.endpoint,{signal:controller.signal,method:"POST",redirect:"error",...providerRequest(API_KEY,MODEL,text,atlasImage,effort)});
     if(!response.ok){
       const responseText=await response.text(),errorText=short(responseText,400),error=new Error(`Model request failed (${response.status}): ${errorText}`);
       error.status=response.status;
@@ -610,7 +635,7 @@ async function callModel(modelInput, atlasImage, retryInstruction="", externalSi
     catch(error){
       const upstream={...upstreamResponseTrace(response,raw),rawContent:content};
       if(upstream.finishReason==="max_tokens"){
-        const limitError=new Error(`Model reached the ${anthropicResponseMaxTokens(API_EFFORT)}-token response allowance before completing its final JSON. Retry or lower the reasoning effort.`);
+        const limitError=new Error(`Model reached the ${anthropicResponseMaxTokens(effort)}-token response allowance before completing its final JSON. Retry or lower the reasoning effort.`);
         limitError.name="ModelOutputLimitError";
         limitError.upstream=upstream;
         throw limitError;
@@ -618,7 +643,7 @@ async function callModel(modelInput, atlasImage, retryInstruction="", externalSi
       error.upstream=upstream;
       throw error;
     }
-    return {content,result,status:response.status,provider:"api",model:MODEL,effort:API_EFFORT,upstream:upstreamResponseTrace(response,raw)};
+    return {content,result,status:response.status,provider:"api",model:MODEL,effort,upstream:upstreamResponseTrace(response,raw)};
   } finally {
     clearTimeout(timeout);
     externalSignal?.removeEventListener("abort", abortFromClient);
@@ -670,8 +695,8 @@ const server = http.createServer(async (req, res) => {
   let url;
   try { url = new URL(req.url, "http://localhost"); } catch { return send(res, 400, "Bad Request", "text/plain; charset=utf-8"); }
   if (LOCAL_CLI && !canonicalRequestOrigin(req)) return send(res, 421, { error:"Request Host does not match the configured PenEcho origin." });
-  if (req.method === "GET" && url.pathname === "/api/config") return send(res, 200, { autoAiDelayMs: AUTO_AI_DELAY_MS, aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS, aiProvider: AI_PROVIDER || "invalid" });
-  if (req.method === "GET" && url.pathname === "/api/config.js") return send(res, 200, `window.PENECHO_CONFIG=${JSON.stringify({ autoAiDelayMs: AUTO_AI_DELAY_MS, aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS, aiProvider: AI_PROVIDER || "invalid" })};`, "application/javascript; charset=utf-8");
+  if (req.method === "GET" && url.pathname === "/api/config") return send(res, 200, { autoAiDelayMs: AUTO_AI_DELAY_MS, aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS, aiProvider: AI_PROVIDER || "invalid", aiEffort:configuredUiEffort() });
+  if (req.method === "GET" && url.pathname === "/api/config.js") return send(res, 200, `window.PENECHO_CONFIG=${JSON.stringify({ autoAiDelayMs: AUTO_AI_DELAY_MS, aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS, aiProvider: AI_PROVIDER || "invalid", aiEffort:configuredUiEffort() })};`, "application/javascript; charset=utf-8");
   if (req.method === "GET" && url.pathname === "/api/debug/log") {
     if (!DEBUG_ARTIFACTS || !isLoopback(req.socket.remoteAddress) || !isLoopbackHostname(requestHost(req)?.hostname)) return send(res, 404, "Not found", "text/plain; charset=utf-8");
     if (!fs.existsSync(LOG_FILE)) return send(res, 200, "No debug log yet.\n", "text/plain; charset=utf-8");
@@ -734,14 +759,14 @@ const server = http.createServer(async (req, res) => {
       const latestInput=latestInputMetadata(payload.changedBox,payload.sourceRect,payload.imageScale,payload.atlasSize);
       if(!latestInput){log({type:"ai",requestId,ip,status:400,error:"Latest input is outside the source image."});return send(res,400,{error:"Latest input is outside the source image.",requestId})}
       if(!payload.hotspotGrid.hotspots.every(h=>overlaps(h.imageRect,latestInput.imageRect))){log({type:"ai",requestId,ip,status:400,error:"Hotspots must intersect latest input."});return send(res,400,{error:"Hotspots must intersect latest input.",requestId})}
-      const modelInput = { trigger:payload.trigger, userAction:payload.userAction, actionMeaning:{auto:"respond naturally to the newest meaningful handwriting or spatial editing gesture",hint:"for an actual problem offer a clue; for conversation respond naturally",continue:"continue the newest user content",explain:"explain the newest content or the content referenced by a box and arrow",plot:"produce at least one renderable visual command; use plot_function for y=f(x), otherwise draw for a diagram",answer:"directly answer the newest question or spatial request"}[payload.userAction]||"respond appropriately",languagePolicy:"follow the newest substantive user content; for control-only gestures follow the referenced content",uiTheme:payload.uiTheme,persona:THEME_PERSONAS[payload.uiTheme],personaPolicy:"Use persona to guide technical emphasis, reasoning method, examples, terminology, answer structure, and tone. It must not override user intent, response language, factual rigor, or safety requirements.",canvasSize:payload.canvasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageSize:payload.atlasSize,imageScale:payload.imageScale,latestInput,focusInset:payload.focusInset||null,hotspotGrid:payload.hotspotGrid,note:"latestInput.imageRect is the authoritative attention region for the newest user input. focusInset, when present, is a magnified duplicate for transcription only. captureRect and sourceRect stay inside visibleRect. Use current hotspots and visual arrows/selection frames to identify referenced content and the intended response destination."};
+      const effort=providerEffort(payload.reasoningEffort),modelInput = { trigger:payload.trigger, userAction:payload.userAction, actionMeaning:{auto:"respond naturally to the newest meaningful handwriting or spatial editing gesture",hint:"for an actual problem offer a clue; for conversation respond naturally",continue:"continue the newest user content",explain:"explain the newest content or the content referenced by a box and arrow",plot:"produce at least one renderable visual command; use plot_function for y=f(x), otherwise draw for a diagram",answer:"directly answer the newest question or spatial request"}[payload.userAction]||"respond appropriately",languagePolicy:"follow the newest substantive user content; for control-only gestures follow the referenced content",uiTheme:payload.uiTheme,persona:THEME_PERSONAS[payload.uiTheme],personaPolicy:"Use persona to guide technical emphasis, reasoning method, examples, terminology, answer structure, and tone. It must not override user intent, response language, factual rigor, or safety requirements.",canvasSize:payload.canvasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageSize:payload.atlasSize,imageScale:payload.imageScale,latestInput,focusInset:payload.focusInset||null,hotspotGrid:payload.hotspotGrid,note:"latestInput.imageRect is the authoritative attention region for the newest user input. focusInset, when present, is a magnified duplicate for transcription only. captureRect and sourceRect stay inside visibleRect. Use current hotspots and visual arrows/selection frames to identify referenced content and the intended response destination."};
       const imageTransport=await prepareOutboundAtlas(payload.atlasImage);
-      requestTrace=beginRequestTrace(requestId,ip,payload,modelInput,imageTransport);
-      saveLatestAtlas(payload.atlasImage,{requestId,action:payload.userAction,atlasSize:payload.atlasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageScale:payload.imageScale,latestInput,focusInset:payload.focusInset||null,hotspotGrid:payload.hotspotGrid,changedBox:payload.changedBox});
+      requestTrace=beginRequestTrace(requestId,ip,payload,modelInput,imageTransport,effort);
+      saveLatestAtlas(payload.atlasImage,{requestId,action:payload.userAction,reasoningEffort:payload.reasoningEffort,providerEffort:effort,atlasSize:payload.atlasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageScale:payload.imageScale,latestInput,focusInset:payload.focusInset||null,hotspotGrid:payload.hotspotGrid,changedBox:payload.changedBox});
       let attempts=0,activeAtlasImage=imageTransport.preferredImage;
       const requestModel=async(retryInstruction="")=>{
         attempts++;
-        try{return await callModelWithTrace(requestTrace,attempts,modelInput,activeAtlasImage,retryInstruction,clientController.signal)}
+        try{return await callModelWithTrace(requestTrace,attempts,modelInput,activeAtlasImage,retryInstruction,effort,clientController.signal)}
         catch(error){
           const active=imageDataUrlParts(activeAtlasImage);
           if(!active||active.mimeType==="image/png"||imageTransport.fallbackUsed||!isImageFormatRejection(error))throw error;
@@ -752,7 +777,7 @@ const server = http.createServer(async (req, res) => {
           traceImageFallback(requestTrace,error,active.mimeType);
           log({type:"ai-image-format-fallback",requestId,ip,from:active.mimeType,to:"image/png",upstreamStatus:error.status});
           attempts++;
-          return callModelWithTrace(requestTrace,attempts,modelInput,activeAtlasImage,retryInstruction,clientController.signal,`png-fallback-after-${format}-rejection`);
+          return callModelWithTrace(requestTrace,attempts,modelInput,activeAtlasImage,retryInstruction,effort,clientController.signal,`png-fallback-after-${format}-rejection`);
         }
       };
       let model=await requestModel();

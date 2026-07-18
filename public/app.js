@@ -2,6 +2,8 @@
 (() => {
   const SIZE = 20000,
     TILE = 512,
+    EXPORT_MAX_DIMENSION = 16384,
+    EXPORT_MAX_PIXELS = 64 * 1024 * 1024,
     MAX_ATLAS_WIDTH = 2048,
     MAX_ATLAS_HEIGHT = 1536,
     FOCUS_INSET_ENABLED = false,
@@ -22,6 +24,8 @@
   const ZH = window.PENECHO_LOCALES?.zh || {};
   const DRAW = window.PENECHO_DRAW;
   const SELECT = window.PENECHO_SELECTION;
+  const EFFORT_LEVELS = ["none", "low", "medium", "high", "max"],
+    EFFORT_OPTIONS = ["config", ...EFFORT_LEVELS];
   const I18N = {
     en: {
       title: "PenEcho | Handwritten AI Canvas",
@@ -54,6 +58,16 @@
       gridOff: "Hide canvas grid",
       researchGridDefault: "Research grid (off by default)",
       aiFont: "AI font",
+      reasoningEffort: "Reasoning effort",
+      reasoningEffortDisplay: "Reasoning ({level})",
+      effortConfigured: "Configured",
+      effortConfiguredShort: "Conf",
+      effortNone: "None",
+      effortLow: "Low",
+      effortMedium: "Medium",
+      effortMediumShort: "Med",
+      effortHigh: "High",
+      effortMaximum: "Max",
       inkColor: "Ink color",
       fontRounded: "Rounded",
       fontHand: "Handwritten",
@@ -91,6 +105,7 @@
       historyDescription: "Stores confirmed canvas content only. Unconfirmed AI drafts are excluded.",
       closeHistory: "Close history",
       newCanvas: "New",
+      exportPng: "Export PNG",
       newCanvasTitle: "Start a new canvas?",
       newCanvasDescription: "Save confirmed content before starting over. Unconfirmed AI drafts are not included.",
       currentSnapshot: "Current snapshot: {name}",
@@ -111,6 +126,8 @@
       snapshotLoaded: "Canvas snapshot loaded",
       snapshotDeleted: "Canvas snapshot deleted",
       newCanvasReady: "New canvas ready",
+      exportComplete: "PNG exported",
+      exportError: "Export: ",
       snapshotError: "Local history: ",
       snapshotTiles: "canvas tiles",
       deleteSnapshotConfirm: "Delete this local snapshot?",
@@ -153,6 +170,8 @@
     storedResearchGrid = localStorage.getItem("penecho-research-grid"),
     storedAutoEnabled = localStorage.getItem("penecho-auto-ai"),
     storedAutoDelayText = localStorage.getItem("penecho-auto-delay-ms"),
+    storedAiEffortText = String(localStorage.getItem("penecho-ai-effort") || "").trim().toLowerCase(),
+    storedAiEffort = storedAiEffortText === "xhigh" ? "max" : storedAiEffortText,
     storedAutoDelay = storedAutoDelayText === null ? NaN : Number(storedAutoDelayText),
     initialLanguage = storedLanguage === "zh" ? "zh" : "en",
     initialTheme = ["arcane", "scifi", "research"].includes(storedTheme) ? storedTheme : "arcane",
@@ -160,9 +179,11 @@
     initialResearchGrid = storedResearchGrid === "true",
     configuredAutoDelay = Number(window.PENECHO_CONFIG?.autoAiDelayMs),
     configuredAiTimeout = Number(window.PENECHO_CONFIG?.aiRequestTimeoutMs),
+    configuredAiEffort = String(window.PENECHO_CONFIG?.aiEffort || "").trim().toLowerCase(),
     serverAutoDelay = Number.isFinite(configuredAutoDelay) && configuredAutoDelay >= 0 ? configuredAutoDelay : DEFAULT_AUTO_DELAY,
     initialAutoDelay = Number.isFinite(storedAutoDelay) && storedAutoDelay >= 0 && storedAutoDelay <= 10000 ? storedAutoDelay : Math.min(10000, serverAutoDelay),
     initialAutoEnabled = storedAutoEnabled === null ? true : storedAutoEnabled === "true",
+    initialAiEffort = EFFORT_OPTIONS.includes(storedAiEffort) ? storedAiEffort : EFFORT_OPTIONS.includes(configuredAiEffort) ? configuredAiEffort : "config",
     initialAiTimeout = Number.isFinite(configuredAiTimeout) && configuredAiTimeout >= 10000 ? configuredAiTimeout : DEFAULT_AI_TIMEOUT;
   const tiles = new Map(),
     state = {
@@ -188,7 +209,9 @@
       auto: initialAutoEnabled,
       timer: 0,
       autoPopoverTimer: 0,
+      effortPopoverTimer: 0,
       autoDelayMs: initialAutoDelay,
+      reasoningEffort: initialAiEffort,
       aiRequestTimeoutMs: initialAiTimeout,
       dirty: null,
       autoEligible: false,
@@ -242,6 +265,26 @@
     range.value = String(state.autoDelayMs / 1000);
     value.textContent = `${autoDelayText()} s`;
   }
+  function updateEffortControl() {
+    if (!EFFORT_OPTIONS.includes(state.reasoningEffort)) state.reasoningEffort = "config";
+    const control = document.querySelector("#effortControl"),
+      button = document.querySelector("#aiEffortButton"),
+      label = document.querySelector("#aiEffortLabel"),
+      levelKey = { config:"effortConfigured", none:"effortNone", low:"effortLow", medium:"effortMedium", high:"effortHigh", max:"effortMaximum" }[state.reasoningEffort] || "effortConfigured",
+      level = t({ config:"effortConfiguredShort", medium:"effortMediumShort" }[state.reasoningEffort] || levelKey),
+      text = t("reasoningEffortDisplay").replace("{level}", level);
+    label.textContent = text;
+    button.setAttribute("aria-label", text);
+    button.setAttribute("title", text);
+    button.setAttribute("aria-expanded", String(!document.querySelector("#effortPopover").hidden));
+    control.dataset.effort = state.reasoningEffort;
+    document.querySelectorAll("#effortOptions .effort-option").forEach((option) => {
+      const optionKey = { config:"effortConfigured", none:"effortNone", low:"effortLow", medium:"effortMedium", high:"effortHigh", max:"effortMaximum" }[option.dataset.effort] || "effortConfigured";
+      option.querySelector("[data-effort-label]").textContent = t(optionKey);
+      option.setAttribute("aria-selected", String(option.dataset.effort === state.reasoningEffort));
+      option.classList.toggle("active", option.dataset.effort === state.reasoningEffort);
+    });
+  }
   function hideAutoDelayControl() {
     clearTimeout(state.autoPopoverTimer);
     state.autoPopoverTimer = 0;
@@ -256,6 +299,28 @@
     document.querySelector("#autoDelayPopover").hidden = false;
     document.querySelector("#auto").setAttribute("aria-expanded", "true");
     keepAutoDelayControlOpen();
+  }
+  function hideEffortControl() {
+    clearTimeout(state.effortPopoverTimer);
+    state.effortPopoverTimer = 0;
+    document.querySelector("#effortPopover").hidden = true;
+    document.querySelector("#aiEffortButton").setAttribute("aria-expanded", "false");
+  }
+  function keepEffortControlOpen() {
+    clearTimeout(state.effortPopoverTimer);
+    state.effortPopoverTimer = setTimeout(hideEffortControl, 5000);
+  }
+  function showEffortControl() {
+    document.querySelector("#effortPopover").hidden = false;
+    document.querySelector("#aiEffortButton").setAttribute("aria-expanded", "true");
+    updateEffortControl();
+    keepEffortControlOpen();
+  }
+  function setEffort(value) {
+    state.reasoningEffort = EFFORT_OPTIONS.includes(value) ? value : "config";
+    localStorage.setItem("penecho-ai-effort", state.reasoningEffort);
+    updateEffortControl();
+    hideEffortControl();
   }
   function setAutoEnabled(enabled, showDelay = false) {
     state.auto = enabled;
@@ -286,6 +351,7 @@
     document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => node.setAttribute("placeholder", t(node.dataset.i18nPlaceholder)));
     document.querySelectorAll("[data-language]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.language === state.language)));
     updateAutoControl();
+    updateEffortControl();
     updateFullscreenButton();
     updateThemeCopy();
     updateEmbodimentLabel();
@@ -696,6 +762,106 @@
       q.drawImage(canvas, dx + (x - bounds.x) * scale, dy + (y - bounds.y) * scale, TILE * scale, TILE * scale);
     }
     return preview;
+  }
+  function exportInkBounds() {
+    let bounds = null;
+    for (const [tileKey, tileCanvas] of tiles) {
+      const [tx, ty] = tileKey.split(",").map(Number),
+        ink = inkBox(tileCanvas, Math.min(TILE, SIZE - tx * TILE), Math.min(TILE, SIZE - ty * TILE));
+      if (!ink) continue;
+      state.inkBounds.set(tileKey, ink);
+      bounds = unionLocalBounds(bounds, { x: tx * TILE + ink.x, y: ty * TILE + ink.y, w: ink.w, h: ink.h });
+    }
+    const selection = state.selection;
+    if (selection?.phase !== "active") return bounds;
+    for (const fragment of selection.fragments) {
+      const target = SELECT.mapFragment(fragment, selection.originalBox, selection.box);
+      bounds = unionLocalBounds(bounds, target);
+    }
+    return bounds;
+  }
+  function exportRegion() {
+    const ink = exportInkBounds();
+    if (!ink) return null;
+    const x = Math.floor(ink.x) - TILE,
+      y = Math.floor(ink.y) - TILE,
+      right = Math.ceil(ink.x + ink.w) + TILE,
+      bottom = Math.ceil(ink.y + ink.h) + TILE;
+    return { x, y, w: right - x, h: bottom - y };
+  }
+  function renderExportCanvas() {
+    const region = exportRegion();
+    if (!region) return null;
+    const scale = Math.min(1, EXPORT_MAX_DIMENSION / region.w, EXPORT_MAX_DIMENSION / region.h, Math.sqrt(EXPORT_MAX_PIXELS / (region.w * region.h))),
+      canvas = offscreen(Math.max(1, Math.ceil(region.w * scale)), Math.max(1, Math.ceil(region.h * scale))),
+      context = canvas.getContext("2d");
+    context.fillStyle = state.paint.paper;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.save();
+    context.setTransform(scale, 0, 0, scale, -region.x * scale, -region.y * scale);
+    if (state.gridVisible) {
+      const right = region.x + region.w,
+        bottom = region.y + region.h;
+      context.strokeStyle = state.paint.paperGrid;
+      context.lineWidth = 1 / scale;
+      context.beginPath();
+      for (let x = Math.floor(region.x / 500) * 500; x <= right; x += 500) {
+        context.moveTo(x, region.y);
+        context.lineTo(x, bottom);
+      }
+      for (let y = Math.floor(region.y / 500) * 500; y <= bottom; y += 500) {
+        context.moveTo(region.x, y);
+        context.lineTo(right, y);
+      }
+      context.stroke();
+    }
+    for (const [tileKey, tileCanvas] of tiles) {
+      const [tx, ty] = tileKey.split(",").map(Number),
+        x = tx * TILE,
+        y = ty * TILE;
+      if (intersection({ x, y, w: TILE, h: TILE }, region)) context.drawImage(tileCanvas, x, y);
+    }
+    const selection = state.selection;
+    if (selection?.phase === "active")
+      for (const fragment of selection.fragments) {
+        const target = SELECT.mapFragment(fragment, selection.originalBox, selection.box);
+        context.drawImage(fragment.renderImage || fragment.image, target.x, target.y, target.w, target.h);
+      }
+    context.restore();
+    return canvas;
+  }
+  function exportFilename() {
+    const now = new Date(),
+      pad = (value) => String(value).padStart(2, "0");
+    return `penecho-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.png`;
+  }
+  async function exportCanvasPng() {
+    const button = document.querySelector("#exportPngBtn");
+    if (button.disabled) return;
+    button.disabled = true;
+    let canvas = null;
+    try {
+      canvas = renderExportCanvas();
+      if (!canvas) {
+        setStatusKey("emptyCanvas");
+        return;
+      }
+      const blob = await canvasBlob(canvas),
+        url = URL.createObjectURL(blob),
+        link = document.createElement("a");
+      link.href = url;
+      link.download = exportFilename();
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setStatusKey("exportComplete");
+    } catch (error) {
+      setStatus(`${t("exportError")}${error.message}`);
+    } finally {
+      if (canvas) canvas.width = canvas.height = 1;
+      button.disabled = false;
+    }
   }
   function imageFromBlob(blob) {
     return new Promise((resolve, reject) => {
@@ -1479,6 +1645,7 @@
             ...packed,
             trigger: automatic ? "user_paused" : "manual",
             userAction: action,
+            ...(state.reasoningEffort === "config" ? {} : { reasoningEffort: state.reasoningEffort }),
             canvasSize: { w: SIZE, h: SIZE },
             uiTheme: state.theme,
             persona: {
@@ -3543,9 +3710,21 @@
     schedule();
     keepAutoDelayControlOpen();
   };
+  document.querySelector("#aiEffortButton").onclick = () => {
+    if (document.querySelector("#effortPopover").hidden) showEffortControl();
+    else hideEffortControl();
+  };
+  document.querySelectorAll("#effortOptions .effort-option").forEach((option) => {
+    option.onclick = () => setEffort(option.dataset.effort);
+  });
+  document.querySelector("#effortPopover").addEventListener("pointerdown", keepEffortControlOpen);
   document.querySelector("#autoDelayPopover").addEventListener("pointerdown", keepAutoDelayControlOpen);
   document.addEventListener("pointerdown", (event) => {
     if (!document.querySelector("#autoControl").contains(event.target)) hideAutoDelayControl();
+    if (!document.querySelector("#effortControl").contains(event.target)) hideEffortControl();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hideEffortControl();
   });
   document.querySelectorAll("[data-language]").forEach((button) => {
     button.onclick = () => {
@@ -3570,6 +3749,7 @@
     }
   };
   document.querySelector("#newCanvasBtn").onclick = openNewCanvasDialog;
+  document.querySelector("#exportPngBtn").onclick = exportCanvasPng;
   document.querySelector("#historyBtn").onclick = openHistoryPanel;
   document.querySelector("#historyClose").onclick = closeHistoryPanel;
   document.querySelector("#historyBackdrop").onclick = closeHistoryPanel;

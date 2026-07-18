@@ -10,7 +10,12 @@
   <a href="https://discord.gg/3jrPJ3mXdX">
     <img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&amp;logo=discord&amp;logoColor=white" alt="Join the PenEcho Discord">
   </a>
+  <a href="https://github.com/erickong/penecho/stargazers">
+    <img src="https://img.shields.io/github/stars/erickong/penecho?style=for-the-badge&amp;logo=github&amp;logoColor=white&amp;color=f5b301" alt="Star PenEcho on GitHub">
+  </a>
 </p>
+
+<p align="center"><em>Built in the open by a small community — <a href="https://discord.gg/3jrPJ3mXdX">come help shape it</a>.</em></p>
 
 <p align="center">
   <img src="https://github.com/erickong/penecho/releases/download/v0.1.0/penecho-demo.gif" alt="PenEcho turning handwritten work into an editable visual answer" width="100%">
@@ -26,8 +31,14 @@ Put a question, equation, diagram, or half-formed idea anywhere on the canvas an
 - Draw a freehand lasso around confirmed ink to move, resize, or recolor it locally; accepting or cancelling a selection never triggers an AI request.
 - Choose Arcane, Sci-fi, or Research mode to match the kind of problem you are exploring.
 - Save lightweight snapshots locally in your browser. Starting a new canvas can overwrite the current snapshot, save a new copy, or continue without saving; unconfirmed AI drafts are never included.
+- Export confirmed canvas ink as a cropped PNG with one `512`-pixel tile of paper margin on every side.
 
 PenEcho keeps a small local runtime and only allocates `512 x 512` tiles where ink exists, so the huge logical canvas does not become a huge bitmap.
+
+## What's new in 0.4.2
+
+- **Per-request reasoning control.** The canvas toolbar now provides six convenient levels for matching response quality and speed to the task: `Configured` keeps the saved model or CLI setting, `None` disables reasoning where the provider supports it, `Low` is the fastest lightweight option, `Medium` is the balanced everyday choice, `High` adds more depth for difficult work, and `Max` requests the provider's highest practical level (`xhigh` for OpenAI and `max` for Anthropic). The choice applies to the next requests without reopening the configuration center.
+- **High-resolution PNG export.** Use `Export` in the toolbar to download the confirmed canvas as a crisp PNG. PenEcho crops to the smallest rectangle containing the ink and adds one paper tile of margin on every side, making the result easy to share or archive without exporting the entire sparse canvas.
 
 ## How it works
 
@@ -66,6 +77,8 @@ penecho
 - `Settings` controls the unified model timeout, the image format sent to every model executor, request recording and retention, listening interface and port, and initial Auto AI delay. WebP is the default; PNG is also available. The delay can also be changed on the canvas.
 
 Every LLM page ends with `Test & Save`, and PenEcho always saves before checking. Codex CLI uses a fast offline check: it verifies the executable and login, then reads `codex debug models --bundled` to confirm the selected model exists. It does not run inference, attach an image, refresh the online catalog, or consume model tokens. Claude CLI and API configuration still send one small real request to verify the selected endpoint/model settings. Whether a check passes or fails, the configuration remains saved and the UI returns to the parent menu with a clear diagnostic.
+
+The canvas toolbar exposes a fixed-width clickable `Reasoning` menu beside Auto AI for frequent per-request changes: `Configured`, `none`, `low`, `medium`, `high`, and the provider's highest practical level. `Configured` omits the per-request effort field so the server preserves the configured custom effort or the underlying CLI default. The last explicit position maps to `xhigh` for OpenAI API and Codex CLI, and to `max` for Anthropic API and Claude CLI. `none` sends OpenAI `reasoning_effort=none`; for Claude it disables thinking. Model support remains provider-dependent, so an endpoint may reject a level its selected model does not implement. The saved `AI_EFFORT` initializes this control, while a toolbar change overrides it for subsequent canvas requests without rewriting the configuration file. The menu closes after a selection or five seconds of inactivity.
 
 The default configuration is `~/.penecho/config.env`. API credentials are plaintext in this local file, receive owner-only permissions on POSIX systems, and are never sent to browser code. Protect it like any other credential. If `penecho` is started before this file exists, it opens the configuration center automatically in an interactive terminal.
 
@@ -182,7 +195,7 @@ The configuration center writes these settings to `~/.penecho/config.env`, or to
 | `AI_API_FORMAT` | API request format: `openai` (default example) or `anthropic` |
 | `AI_API_URL` / `AI_API_KEY` | API endpoint and credential; used only in API mode |
 | `AI_API_MODEL` | Model used in API mode |
-| `AI_EFFORT` | Global reasoning effort; Anthropic API and Claude CLI support `none` (wire value `thinking.type=disabled`); other Anthropic levels enable adaptive thinking at the selected effort; Anthropic API defaults to `medium`, OpenAI API defaults to `max`, and an empty CLI value preserves the CLI default |
+| `AI_EFFORT` | Startup reasoning effort for the canvas control; the toolbar's `Configured` option preserves this value verbatim, including custom names, while an empty CLI value leaves the CLI default untouched; Anthropic API and Claude CLI support `none` (wire value `thinking.type=disabled`), while OpenAI sends `reasoning_effort=none`; explicit toolbar levels override this value per request without modifying the file |
 | `AI_TIMEOUT_SECONDS` | Unified timeout for API, Codex CLI, and Claude CLI model attempts; default 180, allowed range 10–600 |
 | `PENECHO_AI_IMAGE_FORMAT` | Image format sent to API, Codex CLI, and Claude CLI: `webp` (default) or `png` |
 | `CODEX_CLI_MODEL` | Optional model override for Codex CLI mode |
@@ -204,11 +217,23 @@ For implementation details, see the [architecture notes](docs/architecture.md).
 
 ## Build it with us
 
-PenEcho is still young, with real work left in recognition, visual tools, model support, and pen interaction. Join the [PenEcho Discord](https://discord.gg/3jrPJ3mXdX) for real-time discussion, model testing, and shared canvas workflows. Use [GitHub Discussions](https://github.com/erickong/penecho/discussions) for ideas that should remain searchable, and [GitHub Issues](https://github.com/erickong/penecho/issues) for reproducible bugs and confirmed work.
+PenEcho is young and built in the open. The problems that matter most — handwriting recognition, on-canvas visual tools, wider model support, and natural pen interaction — are still open, and you do not need to write code to help move them forward.
 
-Open an issue, propose an idea, or send a pull request. If PenEcho clicks for you, star the repo, share the demo, and help us make it better.
+Ways to help:
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+- **Use it and share what happened.** A canvas that worked well, or one that fell apart, tells us more than any benchmark. A screenshot with secrets removed is enough.
+- **Test a model.** Try any model or provider and report the executor, model ID, effort, rough latency, and a sample result. Google/Gemini models are still untested and especially welcome.
+- **Report rough edges.** Recognition misses, layout glitches, and awkward pen behavior are all worth an issue, however small.
+- **Write code.** Recognition, visual tools, model adapters, and pen input each have room to grow. `npm run check` runs the full suite before you open a pull request.
+- **Help more people read it.** The UI ships English and Chinese today; more translations and clearer docs are welcome.
+
+Where to talk:
+
+- [Discord](https://discord.gg/3jrPJ3mXdX) — real-time discussion, model-testing notes, and shared canvas workflows. New faces and works-in-progress are always welcome.
+- [GitHub Discussions](https://github.com/erickong/penecho/discussions) — ideas and questions worth keeping searchable.
+- [GitHub Issues](https://github.com/erickong/penecho/issues) — reproducible bugs and confirmed work.
+
+New contributors start with [CONTRIBUTING.md](CONTRIBUTING.md). If PenEcho clicks for you, star the repo and share the demo — that visibility is what brings the next person in.
 
 ## License and commercial use
 
