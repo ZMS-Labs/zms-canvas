@@ -129,6 +129,11 @@ function createNotebookStore({
   const pruneRevisions = db.prepare(`
     DELETE FROM notebook_revisions
      WHERE notebook_id = ? AND revision <= ?
+       AND EXISTS (
+         SELECT 1
+           FROM notebooks AS n
+          WHERE n.id = notebook_revisions.notebook_id AND n.owner_id = ?
+       )
   `);
   const deleteNotebookByOwner = db.prepare(`
     DELETE FROM notebooks
@@ -225,10 +230,10 @@ function createNotebookStore({
     }
   }
 
-  function prune(id, newestRevision) {
+  function prune(ownerId, id, newestRevision) {
     const oldestRetainedRevision = newestRevision - revisionLimit + 1;
     if (oldestRetainedRevision > 1) {
-      pruneRevisions.run(id, oldestRetainedRevision - 1);
+      pruneRevisions.run(id, oldestRetainedRevision - 1, ownerId);
     }
   }
 
@@ -242,7 +247,7 @@ function createNotebookStore({
       const timestamp = now();
       writeRevision(id, nextRevision, timestamp, payload);
       advanceNotebook(ownerId, id, baseRevision, nextRevision, timestamp, payload.title);
-      prune(id, nextRevision);
+      prune(ownerId, id, nextRevision);
       return nextRevision;
     });
     return get(ownerId, id, revision);
@@ -271,7 +276,7 @@ function createNotebookStore({
       const timestamp = now();
       writeRevision(id, nextRevision, timestamp, source);
       advanceNotebook(ownerId, id, baseRevision, nextRevision, timestamp, source.title);
-      prune(id, nextRevision);
+      prune(ownerId, id, nextRevision);
       return nextRevision;
     });
     return get(ownerId, id, revision);

@@ -14,6 +14,7 @@ const {
 } = require("../notebook-store.js");
 
 const PNG_BUFFER = Buffer.from("89504e470d0a1a0a00000000", "hex");
+const STORE_SOURCE = fs.readFileSync(path.resolve(__dirname, "..", "notebook-store.js"), "utf8");
 
 function canvasPayload(title, marker = 1) {
   return {
@@ -160,6 +161,17 @@ test("retains the newest 50 revisions by default", () => {
   } finally {
     fixture.close();
   }
+});
+
+test("retention pruning binds the owner boundary in SQL", () => {
+  assert.match(
+    STORE_SOURCE,
+    /DELETE FROM notebook_revisions[\s\S]*?EXISTS\s*\([^)]*owner_id = \?[^)]*\)/,
+  );
+  assert.match(
+    STORE_SOURCE,
+    /pruneRevisions\.run\(id, oldestRetainedRevision - 1, ownerId\)/,
+  );
 });
 
 test("owner-scoped deletion cascades through revisions and tiles", () => {
