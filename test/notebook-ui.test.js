@@ -9,8 +9,9 @@ const vm = require("node:vm");
 const ROOT = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
 const functionSource = (source, name) => {
-  const start = source.indexOf(`function ${name}(`);
+  let start = source.indexOf(`function ${name}(`);
   assert.notEqual(start, -1, `missing function ${name}`);
+  if (source.slice(start - 6, start) === "async ") start -= 6;
   const body = source.indexOf("{", start);
   let depth = 0;
   for (let index = body; index < source.length; index++) {
@@ -20,6 +21,11 @@ const functionSource = (source, name) => {
   assert.fail(`unterminated function ${name}`);
 };
 const loadPureFunction = (source, name) => vm.runInNewContext(`(${functionSource(source, name)})`);
+const loadScopedFunctions = (source, names, scope) => {
+  const keys = Object.keys(scope);
+  const factory = vm.runInNewContext(`(function (${keys.join(",")}) {\n${names.map((name) => functionSource(source, name)).join("\n")}\nreturn { ${names.join(",")} };\n})`);
+  return factory(...keys.map((key) => scope[key]));
+};
 
 test("synchronized notebook controls and canvas integration points are present", () => {
   const html = read("public/index.html");
@@ -120,14 +126,138 @@ test("device snapshot copy retains the local record and synchronized destructive
   assert.match(app, /confirm\(t\("restoreRevisionConfirm"\)\.replace\("\{revision\}", revision\.revision\)\)/);
 });
 
-test("canvas source changes drain a pending synchronized save before replacement", () => {
+test("a failed synchronized drain aborts blank-canvas replacement without resetting notebook state", async () => {
   const app = read("public/app.js");
-  const detach = functionSource(app, "detachNotebookCanvas");
+  let configureCalls = 0;
+  let clearCalls = 0;
+  const history = [{ keep: true }];
+  const state = {
+    notebooksEnabled: true,
+    currentNotebookTitle: "Active notebook",
+    selection: null,
+    snapshotLoadGeneration: 3,
+    userRevision: 7,
+    history,
+    future: [{ keep: true }],
+    historyBefore: { clear() { clearCalls++; } },
+    inkBounds: { clear() { clearCalls++; } },
+    currentSnapshotId: "device-copy",
+    currentSnapshotName: "Device copy",
+  };
+  const document = {
+    querySelector(selector) {
+      if (selector === "#newCanvasDialog") return { open: true, close() {} };
+      if (selector === "#newSnapshotName") return { value: "keep" };
+      if (selector === "#historyPanel") return { classList: { contains() { return false; } } };
+      throw Error(`Unexpected selector: ${selector}`);
+    },
+  };
+  const { startBlankCanvas } = loadScopedFunctions(app, ["detachNotebookCanvas", "startBlankCanvas"], {
+    notebookController: {
+      flush: async () => { throw Error("recovery write failed"); },
+      configure() { configureCalls++; },
+    },
+    state,
+    document,
+    tiles: { clear() { clearCalls++; } },
+    cancelSelection() {},
+    invalidateRecognition() {},
+    cancelPendingForRevision() {},
+    closeHistoryPanel() {},
+    fit() {},
+    setStatusKey() {},
+  });
+
+  await assert.rejects(startBlankCanvas(), /recovery write failed/);
+  assert.equal(configureCalls, 0);
+  assert.equal(clearCalls, 0);
+  assert.equal(state.currentNotebookTitle, "Active notebook");
+  assert.equal(state.history, history);
+});
+
+test("canvas source changes await exactly one successful detach before replacement", () => {
+  const app = read("public/app.js");
   const load = functionSource(app, "loadSnapshot");
   const blank = functionSource(app, "startBlankCanvas");
 
-  assert.match(detach, /await notebookController\.flush\(\)/);
+  assert.equal((blank.match(/detachNotebookCanvas\(\)/g) || []).length, 1);
   assert.ok(load.indexOf("await detachNotebookCanvas()") < load.indexOf("tiles.clear()"));
   assert.ok(blank.indexOf("await detachNotebookCanvas()") < blank.indexOf("tiles.clear()"));
   assert.match(functionSource(app, "completeNewCanvas"), /await startBlankCanvas\(\)/);
+  assert.match(app, /querySelector\("#newDiscard"\)\.onclick = \(\) => runSnapshotAction\(startBlankCanvas\)/);
+});
+
+test("notebook read and action failures use their localized operation path, not save status", async () => {
+  const app = read("public/app.js");
+  const localErrors = [];
+  const saveStatuses = [];
+  const list = { dataset: {}, querySelectorAll() { return []; } };
+  const { runNotebookAction } = loadScopedFunctions(app, ["runNotebookAction"], {
+    document: { querySelector() { return list; } },
+    setNotebookOperationError(key, error) { localErrors.push({ key, message: error.message }); },
+    reportNotebookStatus(...args) { saveStatuses.push(args); },
+    renderSyncedNotebookList() {},
+  });
+
+  const result = await runNotebookAction(async () => { throw Error("offline"); }, "notebookLoadError");
+  assert.equal(result, null);
+  assert.deepEqual(localErrors, [{ key: "notebookLoadError", message: "offline" }]);
+  assert.deepEqual(saveStatuses, []);
+  assert.doesNotMatch(app, /reportNotebookStatus\("Save failed"/);
+
+  const snapshotList = functionSource(app, "renderSnapshotList");
+  const notebookList = functionSource(app, "renderSyncedNotebookList");
+  const revisions = functionSource(app, "toggleNotebookRevisions");
+  assert.match(snapshotList, /runNotebookAction\([\s\S]*"notebookCopyError"\)/);
+  assert.match(notebookList, /runNotebookAction\([\s\S]*"notebookLoadError"\)/);
+  assert.match(notebookList, /runNotebookAction\([\s\S]*"notebookDeleteError"\)/);
+  assert.match(revisions, /runNotebookAction\([\s\S]*"notebookRestoreError"\)/);
+  assert.match(revisions, /setNotebookOperationError\("notebookRevisionsError", error\)/);
+  assert.match(functionSource(app, "openHistoryPanel"), /refreshSyncedNotebooksSafely\(\)/);
+});
+
+test("notebook operation errors and untitled names are localized in English and Chinese", () => {
+  const app = read("public/app.js");
+  const zh = read("public/locales/zh.js");
+  const capture = functionSource(app, "captureNotebookCanvas");
+  const keys = [
+    "notebookListError",
+    "notebookRevisionsError",
+    "notebookLoadError",
+    "notebookDeleteError",
+    "notebookRestoreError",
+    "notebookCopyError",
+    "notebookSyncError",
+  ];
+
+  assert.match(capture, /title: state\.currentNotebookTitle \|\| t\("untitledNotebook"\)/);
+  assert.doesNotMatch(capture, /"Untitled notebook"/);
+  assert.match(app, /untitledNotebook: "Untitled notebook"/);
+  assert.match(zh, /untitledNotebook: "未命名笔记本"/);
+  for (const key of keys) {
+    assert.match(app, new RegExp(`${key}:`));
+    assert.match(zh, new RegExp(`${key}:`));
+  }
+});
+
+test("bounded ordered map caps active tile work and preserves result order", async () => {
+  const app = read("public/app.js");
+  const map = loadPureFunction(app, "mapWithConcurrency");
+  let active = 0;
+  let maxActive = 0;
+  const inputs = Array.from({ length: 11 }, (_, index) => index);
+
+  const results = await map(inputs, 4, async (value) => {
+    active++;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => setTimeout(resolve, (inputs.length - value) % 3));
+    active--;
+    return `result-${value}`;
+  });
+
+  assert.equal(maxActive, 4);
+  assert.deepEqual(Array.from(results), inputs.map((value) => `result-${value}`));
+  assert.match(app, /const NOTEBOOK_TILE_CONCURRENCY = 4/);
+  assert.match(functionSource(app, "captureNotebookCanvas"), /mapWithConcurrency\(\[\.\.\.tiles\], NOTEBOOK_TILE_CONCURRENCY/);
+  assert.match(functionSource(app, "decodeNotebookTiles"), /mapWithConcurrency\(payload\.tiles, NOTEBOOK_TILE_CONCURRENCY/);
 });

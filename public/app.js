@@ -25,6 +25,7 @@
   const DRAW = window.PENECHO_DRAW;
   const SELECT = window.PENECHO_SELECTION;
   const NOTEBOOKS = window.ZMSCanvasNotebooks;
+  const NOTEBOOK_TILE_CONCURRENCY = 4;
   const EFFORT_LEVELS = ["none", "low", "medium", "high", "max"],
     EFFORT_OPTIONS = ["config", ...EFFORT_LEVELS];
   const I18N = {
@@ -146,6 +147,14 @@
       notebookRecoveryWarning: "Saved; recovery cleanup failed",
       notebookLoadingRevisions: "Loading revisions…",
       notebookNoRevisions: "No earlier revisions",
+      notebookUnavailable: "Unavailable",
+      notebookListError: "Could not load synced notebooks: ",
+      notebookRevisionsError: "Could not load notebook revisions: ",
+      notebookLoadError: "Could not open notebook: ",
+      notebookDeleteError: "Could not delete notebook: ",
+      notebookRestoreError: "Could not restore revision: ",
+      notebookCopyError: "Could not copy device snapshot: ",
+      notebookSyncError: "Notebook sync unavailable: ",
       restoreRevisionConfirm: "Restore revision {revision}? The current canvas will be saved as a newer revision.",
       deleteNotebookConfirm: "Delete this synced notebook and all of its revisions?",
       emptyCanvas: "The canvas is empty",
@@ -783,15 +792,26 @@
     element.title = error?.message || "";
     syncCurrentNotebookState();
     if (value === "Saved" || value === "Conflict copy saved" || value === "Saved with recovery warning") {
-      Promise.resolve().then(() => refreshSyncedNotebooks().catch(() => {}));
+      Promise.resolve().then(refreshSyncedNotebooksSafely);
     }
+  }
+  function setNotebookOperationError(key, error) {
+    setStatus(`${t(key)}${error?.message || ""}`);
+  }
+  function setNotebookUnavailable(error) {
+    const element = document.querySelector("#notebookSyncStatus");
+    state.notebookStatusKey = "notebookUnavailable";
+    element.dataset.state = "error";
+    element.querySelector("[data-notebook-sync-copy]").textContent = t("notebookUnavailable");
+    element.title = error?.message || "";
+    setNotebookOperationError("notebookSyncError", error);
   }
   function markNotebookDirty() {
     if (!state.notebookApplying) notebookController?.markConfirmedMutation();
   }
   async function detachNotebookCanvas() {
     if (!notebookController || !state.notebooksEnabled) return;
-    await notebookController.flush().catch(() => {});
+    await notebookController.flush();
     notebookController.configure({ enabled: false });
     notebookController.configure({ enabled: true, current: null });
     state.currentNotebookTitle = "";
@@ -831,6 +851,20 @@
   }
   function notebookPreviewUrl(value) {
     return `data:image/png;base64,${value}`;
+  }
+  async function mapWithConcurrency(items, limit, mapper) {
+    if (!Number.isInteger(limit) || limit < 1) throw RangeError("Concurrency limit must be a positive integer");
+    const input = Array.from(items),
+      results = new Array(input.length);
+    let nextIndex = 0;
+    async function work() {
+      while (nextIndex < input.length) {
+        const index = nextIndex++;
+        results[index] = await mapper(input[index], index);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, input.length) }, work));
+    return results;
   }
   function requestResult(request) {
     return new Promise((resolve, reject) => {
@@ -987,24 +1021,27 @@
   async function captureNotebookCanvas() {
     if (state.selection) commitSelection();
     return {
-      title: state.currentNotebookTitle || "Untitled notebook",
+      title: state.currentNotebookTitle || t("untitledNotebook"),
       theme: state.theme,
       view: { scale: state.scale, panX: state.panX, panY: state.panY },
       preview: await blobToBase64(await canvasBlob(snapshotPreview())),
-      tiles: await Promise.all([...tiles].map(async ([key, canvas]) => ({ key, png: await blobToBase64(await canvasBlob(canvas)) }))),
+      tiles: await mapWithConcurrency([...tiles], NOTEBOOK_TILE_CONCURRENCY, async ([key, canvas]) => ({ key, png: await blobToBase64(await canvasBlob(canvas)) })),
     };
   }
   async function decodeNotebookTiles(payload) {
     if (!payload || !Array.isArray(payload.tiles)) throw Error("Notebook tiles are missing");
     const keys = new Set();
-    return Promise.all(payload.tiles.map(async ({ key, png }) => {
-      if (keys.has(key)) throw Error("Notebook contains a duplicate tile");
-      keys.add(key);
+    for (const tile of payload.tiles) {
+      if (!tile || typeof tile.key !== "string" || typeof tile.png !== "string") throw Error("Notebook contains an invalid tile");
+      if (keys.has(tile.key)) throw Error("Notebook contains a duplicate tile");
+      keys.add(tile.key);
+    }
+    return mapWithConcurrency(payload.tiles, NOTEBOOK_TILE_CONCURRENCY, async ({ key, png }) => {
       const image = await imageFromBlob(base64PngBlob(png)),
         canvas = offscreen(TILE, TILE);
       canvas.getContext("2d").drawImage(image, 0, 0);
       return { key, canvas };
-    }));
+    });
   }
   async function applyNotebookCanvas(payload) {
     if (!payload || !["arcane", "scifi", "research"].includes(payload.theme) || !payload.view) throw Error("Notebook canvas is invalid");
@@ -1155,7 +1192,7 @@
       imported = await notebookController.importLegacy(payload);
     await applyNotebookCanvas(imported);
     syncCurrentNotebookState();
-    await refreshSyncedNotebooks();
+    await refreshSyncedNotebooksSafely();
   }
   function updateNewCanvasDialog() {
     const label = document.querySelector("#currentSnapshotLabel"),
@@ -1185,7 +1222,6 @@
     state.historyBefore.clear();
     state.currentSnapshotId = null;
     state.currentSnapshotName = "";
-    detachNotebookCanvas();
     state.viewInitialized = false;
     document.querySelector("#newSnapshotName").value = "";
     if (dialog.open) dialog.close();
@@ -1258,7 +1294,7 @@
       load.onclick = () => runSnapshotAction(() => loadSnapshot(item.id));
       copy.className = "history-copy";
       copy.textContent = t("copyToSyncedNotebooks");
-      copy.onclick = () => runNotebookAction(() => copySnapshotToSyncedNotebooks(item.id));
+      copy.onclick = () => runNotebookAction(() => copySnapshotToSyncedNotebooks(item.id), "notebookCopyError");
       remove.className = "history-delete";
       remove.textContent = t("deleteSnapshot");
       remove.onclick = () => runSnapshotAction(() => deleteSnapshot(item.id));
@@ -1318,9 +1354,9 @@
       load.onclick = () => runNotebookAction(async () => {
         await notebookController.load(item.id);
         syncCurrentNotebookState();
-        await refreshSyncedNotebooks();
+        await refreshSyncedNotebooksSafely();
         closeHistoryPanel();
-      });
+      }, "notebookLoadError");
       revisions.textContent = t("showRevisions");
       revisions.setAttribute("aria-expanded", "false");
       revisionList.className = "notebook-revision-list";
@@ -1333,8 +1369,8 @@
         runNotebookAction(async () => {
           await notebookController.delete(item.id);
           syncCurrentNotebookState();
-          await refreshSyncedNotebooks();
-        });
+          await refreshSyncedNotebooksSafely();
+        }, "notebookDeleteError");
       };
       actions.append(load, revisions, remove);
       meta.append(title, detail, actions, revisionList);
@@ -1374,15 +1410,15 @@
             if (notebookController.current()?.id !== item.id) await notebookController.load(item.id);
             await notebookController.restore(item.id, revision.revision);
             syncCurrentNotebookState();
-            await refreshSyncedNotebooks();
-          });
+            await refreshSyncedNotebooksSafely();
+          }, "notebookRestoreError");
         };
         row.append(detail, restore);
         list.append(row);
       }
     } catch (error) {
-      list.textContent = t("notebookSaveFailed");
-      reportNotebookStatus("Save failed", error);
+      list.textContent = `${t("notebookRevisionsError")}${error.message}`;
+      setNotebookOperationError("notebookRevisionsError", error);
     }
   }
   async function refreshSyncedNotebooks() {
@@ -1394,7 +1430,16 @@
     syncedNotebookItems = sortNotebookSummaries(await notebookController.list());
     renderSyncedNotebookList();
   }
-  async function runNotebookAction(action) {
+  async function refreshSyncedNotebooksSafely() {
+    try {
+      await refreshSyncedNotebooks();
+      return true;
+    } catch (error) {
+      setNotebookOperationError("notebookListError", error);
+      return false;
+    }
+  }
+  async function runNotebookAction(action, errorKey) {
     const list = document.querySelector("#syncedNotebooks");
     if (list.dataset.busy === "true") return;
     list.dataset.busy = "true";
@@ -1402,7 +1447,7 @@
     try {
       return await action();
     } catch (error) {
-      reportNotebookStatus("Save failed", error);
+      setNotebookOperationError(errorKey, error);
       return null;
     } finally {
       delete list.dataset.busy;
@@ -1421,7 +1466,7 @@
     updateNotebookUiCopy();
     renderSnapshotList();
     if (!NOTEBOOKS) {
-      if (state.notebooksEnabled) reportNotebookStatus("Save failed", Error("Notebook client unavailable"));
+      if (state.notebooksEnabled) setNotebookUnavailable(Error("Notebook client unavailable"));
       return;
     }
     try {
@@ -1435,9 +1480,9 @@
         status: reportNotebookStatus,
       });
       notebookController.configure(configuredNotebooks);
-      if (state.notebooksEnabled) reportNotebookStatus("Saved");
+      if (state.notebooksEnabled) refreshSyncedNotebooksSafely();
     } catch (error) {
-      reportNotebookStatus("Save failed", error);
+      if (state.notebooksEnabled) setNotebookUnavailable(error);
     }
   }
   function flushNotebookBestEffort() {
@@ -1452,7 +1497,7 @@
     panel.setAttribute("aria-hidden", "false");
     button.setAttribute("aria-expanded", "true");
     refreshSnapshots().catch((error) => setStatus(`${t("snapshotError")}${error.message}`));
-    refreshSyncedNotebooks().catch((error) => reportNotebookStatus("Save failed", error));
+    refreshSyncedNotebooksSafely();
   }
   function closeHistoryPanel() {
     const panel = document.querySelector("#historyPanel"),
@@ -4117,7 +4162,7 @@
   document.querySelector("#historyNew").onclick = openNewCanvasDialog;
   document.querySelector("#newCanvasClose").onclick = () => document.querySelector("#newCanvasDialog").close("cancel");
   document.querySelector("#newCanvasCancel").onclick = () => document.querySelector("#newCanvasDialog").close("cancel");
-  document.querySelector("#newDiscard").onclick = startBlankCanvas;
+  document.querySelector("#newDiscard").onclick = () => runSnapshotAction(startBlankCanvas);
   document.querySelector("#newSaveCopy").onclick = () => completeNewCanvas("new");
   document.querySelector("#newOverwrite").onclick = () => completeNewCanvas("overwrite");
   document.querySelector("#newCanvasDialog").addEventListener("cancel", (event) => {
