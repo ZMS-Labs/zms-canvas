@@ -185,6 +185,24 @@ test("API configure saves before testing, keeps an existing key, and returns suc
   assert.ok(ui.notes.some(note => note.kind === "error" && /still saved/.test(note.title)));
 });
 
+test("Anthropic API configure saves none as an explicit thinking-disabled effort", async () => {
+  const directory = temporaryDirectory(), home = path.join(directory, "home"), cwd = path.join(directory, "cwd");
+  fs.mkdirSync(home, { recursive:true }); fs.mkdirSync(cwd, { recursive:true });
+  const ui = scriptedUi({
+    selections:["anthropic", "none", "save"],
+    inputs:["https://anthropic.test", "claude-opus-4-8"],
+    passwords:["test-key"],
+  });
+  const code = await main(["configure", "--api"], {
+    env:{}, home, cwd, packageRoot:ROOT, ui, output:capture().stream, errorOutput:capture().stream,
+    apiTester:async () => ({ format:"anthropic", status:200 }),
+  });
+  const saved = fs.readFileSync(path.join(home, ".penecho", "config.env"), "utf8");
+  assert.equal(code, 0);
+  assert.match(saved, /^AI_API_FORMAT=anthropic$/m);
+  assert.match(saved, /^AI_EFFORT=none$/m);
+});
+
 test("Codex and Claude are supported by configure and save their model choices", async () => {
   for (const scenario of [
     { flag:"--codex", selections:["gpt-5.6-sol", "xhigh", "save"], field:"CODEX_CLI_MODEL", model:"gpt-5.6-sol", caller:"codexCaller" },
@@ -210,10 +228,13 @@ test("API validation and connection requests use the selected wire format", asyn
   const calls = [], fetchImpl = async (url, options) => { calls.push({ url, options }); return { ok:true, status:200, text:async () => "{}" }; };
   await testApiConnection({ AI_API_FORMAT:"openai", AI_API_URL:"https://openai.test/v1", AI_API_MODEL:"gpt", AI_API_KEY:"key", AI_EFFORT:"xhigh" }, { fetchImpl, timeoutMs:1000 });
   await testApiConnection({ AI_API_FORMAT:"anthropic", AI_API_URL:"https://anthropic.test", AI_API_MODEL:"claude", AI_API_KEY:"key", AI_EFFORT:"max" }, { fetchImpl, timeoutMs:1000 });
+  await testApiConnection({ AI_API_FORMAT:"anthropic", AI_API_URL:"https://anthropic.test", AI_API_MODEL:"claude", AI_API_KEY:"key", AI_EFFORT:"none" }, { fetchImpl, timeoutMs:1000 });
   assert.equal(calls[0].url, "https://openai.test/v1/chat/completions");
   assert.equal(JSON.parse(calls[0].options.body).reasoning_effort, "xhigh");
   assert.equal(calls[1].url, "https://anthropic.test/v1/messages");
   assert.equal(JSON.parse(calls[1].options.body).output_config.effort, "max");
+  assert.deepEqual(JSON.parse(calls[2].options.body).thinking, { type:"disabled" });
+  assert.equal(JSON.parse(calls[2].options.body).output_config, undefined);
 });
 
 test("API failure diagnostics redact the key", async () => {

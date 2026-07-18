@@ -6,6 +6,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 
 const MAX_CAPTURE_BYTES = 1024 * 1024;
+const DISABLED_THINKING_FALLBACK_EFFORT = "low";
 
 function findOnPath(name, env = process.env) {
   const directories = String(env.PATH || env.Path || "").split(path.delimiter).filter(Boolean);
@@ -39,7 +40,7 @@ function resolveClaudeLaunch(configuredPath = "claude", env = process.env) {
   return { command: executable, prefixArgs: [] };
 }
 
-function sanitizeClaudeEnv(env = process.env) {
+function sanitizeClaudeEnv(env = process.env, effort = null) {
   const clean = {}, allowed = [
     "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
     "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR",
@@ -52,11 +53,13 @@ function sanitizeClaudeEnv(env = process.env) {
   clean.CLAUDE_CODE_SKIP_PROMPT_HISTORY = "1";
   clean.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
   clean.CLAUDE_CODE_DISABLE_TERMINAL_TITLE = "1";
-  clean.MAX_THINKING_TOKENS = "0";
+  if (String(effort || "").trim().toLowerCase() === "none") clean.MAX_THINKING_TOKENS = "0";
   return clean;
 }
 
 function buildClaudeArgs({ systemPrompt, model, effort }) {
+  const selectedEffort = String(effort || "").trim(), thinkingDisabled = selectedEffort.toLowerCase() === "none",
+    cliEffort = thinkingDisabled ? DISABLED_THINKING_FALLBACK_EFFORT : selectedEffort;
   const args = [
     "-p",
     "--input-format", "stream-json",
@@ -75,9 +78,9 @@ function buildClaudeArgs({ systemPrompt, model, effort }) {
     "--system-prompt", systemPrompt,
   ];
   if (model) args.push("--model", model);
-  if (effort) {
-    args.push("--effort", effort);
-    args.push("--settings", JSON.stringify({ env: { CLAUDE_CODE_EFFORT_LEVEL: effort } }));
+  if (cliEffort) {
+    args.push("--effort", cliEffort);
+    args.push("--settings", JSON.stringify({ env: { CLAUDE_CODE_EFFORT_LEVEL: cliEffort } }));
   }
   return args;
 }
@@ -263,7 +266,7 @@ async function callClaudeCli({ executable, model, effort, systemPrompt, prompt, 
   let caughtError = null, cleanupReady = Promise.resolve(), deferCleanup = false;
   try {
     await fs.promises.chmod(workDir, 0o700).catch(() => {});
-    const launch = resolveClaudeLaunch(executable, env), args = buildClaudeArgs({ systemPrompt, model, effort }), input = claudeInput(prompt, atlasImage), childEnv = sanitizeClaudeEnv(env), result = await runProcess(launch, args, input, workDir, childEnv, signal);
+    const launch = resolveClaudeLaunch(executable, env), args = buildClaudeArgs({ systemPrompt, model, effort }), input = claudeInput(prompt, atlasImage), childEnv = sanitizeClaudeEnv(env, effort), result = await runProcess(launch, args, input, workDir, childEnv, signal);
     cleanupReady = result.cleanupReady || cleanupReady;
     deferCleanup = Boolean(result.deferCleanup);
     if (signal?.aborted) throw abortError();

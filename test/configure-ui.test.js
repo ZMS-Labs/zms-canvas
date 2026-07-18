@@ -15,10 +15,10 @@ function temporaryDirectory() {
 }
 
 function uiScript({ selections = [], inputs = [], confirms = [], passwords = [] } = {}) {
-  const headers = [], notes = [];
+  const headers = [], notes = [], selects = [];
   return {
     interactive:true,
-    select:async () => { assert.ok(selections.length, "unexpected select"); return selections.shift(); },
+    select:async (message, choices, defaultValue) => { selects.push({ message, choices, defaultValue }); assert.ok(selections.length, "unexpected select"); return selections.shift(); },
     input:async (_message, fallback = "") => inputs.length ? inputs.shift() : fallback,
     confirm:async (_message, fallback = false) => confirms.length ? confirms.shift() : fallback,
     password:async () => passwords.length ? passwords.shift() : "",
@@ -27,6 +27,7 @@ function uiScript({ selections = [], inputs = [], confirms = [], passwords = [] 
     pause:async () => {},
     headers,
     notes,
+    selects,
   };
 }
 
@@ -74,6 +75,32 @@ test("provider pages include the requested model quality guidance", async () => 
   assert.match(codexUi.headers[0].detail, /GPT-5\.5 or newer/);
   assert.match(codexUi.headers[0].detail, /gpt-5\.6-sol/);
   assert.match(codexUi.headers[0].detail, /xhigh/);
+});
+
+test("Claude CLI configuration offers none alongside explicit thinking effort levels", async () => {
+  const directory = temporaryDirectory(), configuration = {
+    home:directory, stateDir:path.join(directory, ".penecho"), configFile:path.join(directory, "config.env"), env:{},
+  };
+  const ui = uiScript({ selections:["opus", "none", "cancel"] });
+  await runConfigureMenu(configuration, { ui, directProvider:"claude-cli", save:async () => {}, test:async () => "ok" });
+  const effortPrompt = ui.selects.find(item => item.message === "Reasoning effort");
+  assert.deepEqual(effortPrompt.choices.filter(choice => ["none","low","medium","high","max"].includes(choice.value)).map(choice => choice.value), ["none","low","medium","high","max"]);
+});
+
+test("Anthropic API configuration offers none and defaults new selections to medium", async () => {
+  const directory = temporaryDirectory(), configuration = {
+    home:directory, stateDir:path.join(directory, ".penecho"), configFile:path.join(directory, "config.env"),
+    env:{ AI_API_FORMAT:"openai", AI_EFFORT:"xhigh" },
+  };
+  const ui = uiScript({
+    selections:["anthropic", "none", "cancel"],
+    inputs:["https://api.anthropic.com", "claude-opus-4-8"],
+    passwords:["test-key"],
+  });
+  await runConfigureMenu(configuration, { ui, directProvider:"api", save:async () => {}, test:async () => "ok" });
+  const effortPrompt = ui.selects.find(item => item.message === "Reasoning effort");
+  assert.ok(effortPrompt.choices.some(choice => choice.value === "none"));
+  assert.equal(effortPrompt.defaultValue, "medium");
 });
 
 test("configured CLI models are discovered when local settings expose them", () => {

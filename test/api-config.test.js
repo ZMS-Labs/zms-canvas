@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { resolveApiConfig } = require("../api-config.js");
+const { anthropicEffortParameters, anthropicResponseMaxTokens, normalizedApiEffort, resolveApiConfig } = require("../api-config.js");
 
 test("API format selection builds the matching endpoint", () => {
   assert.deepEqual(resolveApiConfig("https://api.openai.com/v1", "openai"), {
@@ -17,4 +17,17 @@ test("explicit API endpoints must agree with the selected format", () => {
   assert.equal(resolveApiConfig("https://example.test/v1/messages", "openai"), null);
   assert.equal(resolveApiConfig("https://example.test/v1/chat/completions", "anthropic"), null);
   assert.equal(resolveApiConfig("https://user:secret@example.test/v1", "openai"), null);
+});
+
+test("Anthropic effort maps none to disabled thinking and other levels to adaptive thinking", () => {
+  assert.equal(normalizedApiEffort("anthropic", ""), "medium");
+  assert.equal(normalizedApiEffort("openai", ""), "max");
+  assert.deepEqual(anthropicEffortParameters("none"), { thinking:{ type:"disabled" } });
+  assert.deepEqual(anthropicEffortParameters("medium"), {
+    thinking:{ type:"adaptive" }, output_config:{ effort:"medium" },
+  });
+  assert.deepEqual(anthropicEffortParameters("high", false), { output_config:{ effort:"high" } });
+  assert.equal(anthropicResponseMaxTokens("medium"), 8192);
+  assert.equal(anthropicResponseMaxTokens("none"), 8192);
+  assert.equal(anthropicResponseMaxTokens("max"), 16384);
 });

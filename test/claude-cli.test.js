@@ -43,6 +43,13 @@ test("leaves Claude effort unset when the global value is empty", () => {
   assert.equal(args.includes("--settings"), false);
 });
 
+test("Claude none disables thinking while using low to override a global CLI effort", () => {
+  const args = buildClaudeArgs({ systemPrompt:"system instructions", model:"opus", effort:"none" });
+  assert.equal(args[args.indexOf("--effort") + 1], "low");
+  assert.deepEqual(JSON.parse(args[args.indexOf("--settings") + 1]), { env:{ CLAUDE_CODE_EFFORT_LEVEL:"low" } });
+  assert.equal(args.includes("none"), false);
+});
+
 test("Claude CLI input carries text and the canvas image in one streaming user message", () => {
   const payload = JSON.parse(claudeInput("request metadata", PNG));
   assert.equal(payload.type, "user");
@@ -57,8 +64,9 @@ test("Claude CLI input preserves a configured WebP image and MIME type", () => {
   assert.equal(Buffer.from(payload.message.content[1].source.data, "base64").toString("ascii", 0, 4), "RIFF");
 });
 
-test("Claude CLI child environment keeps login context, disables extended thinking, and removes API credentials", () => {
-  const clean = sanitizeClaudeEnv({ PATH:"bin", HOME:"home", CLAUDE_CODE_OAUTH_TOKEN:"login-token", MAX_THINKING_TOKENS:"9000", AI_API_KEY:"secret", OPENAI_API_KEY:"legacy-secret", ANTHROPIC_API_KEY:"anthropic-secret", UNRELATED_SECRET:"private" });
+test("Claude CLI child environment disables thinking only for none and removes API credentials", () => {
+  const source = { PATH:"bin", HOME:"home", CLAUDE_CODE_OAUTH_TOKEN:"login-token", MAX_THINKING_TOKENS:"9000", AI_API_KEY:"secret", OPENAI_API_KEY:"legacy-secret", ANTHROPIC_API_KEY:"anthropic-secret", UNRELATED_SECRET:"private" },
+    clean = sanitizeClaudeEnv(source, "none"), medium = sanitizeClaudeEnv(source, "medium"), native = sanitizeClaudeEnv(source, null);
   assert.equal(clean.PATH, "bin");
   assert.equal(clean.HOME, "home");
   assert.equal(clean.CLAUDE_CODE_OAUTH_TOKEN, "login-token");
@@ -67,6 +75,8 @@ test("Claude CLI child environment keeps login context, disables extended thinki
   assert.equal(clean.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
   assert.equal(clean.CLAUDE_CODE_DISABLE_TERMINAL_TITLE, "1");
   assert.equal(clean.MAX_THINKING_TOKENS, "0");
+  assert.equal(medium.MAX_THINKING_TOKENS, undefined);
+  assert.equal(native.MAX_THINKING_TOKENS, undefined);
 });
 
 test("Claude CLI JSON result parsing accepts text and structured output", () => {
@@ -79,14 +89,28 @@ test("Claude CLI JSON result parsing accepts text and structured output", () => 
 
 test("Claude CLI adapter sends the image, system prompt, model, and no API key", async () => {
   const directory = temporaryDirectory(), fakeCli = path.join(directory, "fake-claude.js"), record = path.join(directory, "record.json");
-  fs.writeFileSync(fakeCli, `"use strict";const fs=require("node:fs");const args=process.argv.slice(2),input=JSON.parse(fs.readFileSync(0,"utf8").trim()),systemIndex=args.indexOf("--system-prompt"),systemPrompt=args[systemIndex+1],image=input.message.content.find(part=>part.type==="image");fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({args,systemPrompt,mediaType:image?.source?.media_type,hasImage:Boolean(image?.source?.data)}));const result={intent:"answer",observedText:"image",message:process.env.AI_API_KEY?"leaked":"ok",commands:[]};process.stdout.write(JSON.stringify({type:"result",subtype:"success",result:JSON.stringify(result)}));\n`);
-  const content = await callClaudeCli({ executable:fakeCli, model:"sonnet", systemPrompt:"system instructions", prompt:"request metadata", atlasImage:PNG, env:{ ...process.env, AI_API_KEY:"must-not-leak" } });
+  fs.writeFileSync(fakeCli, `"use strict";const fs=require("node:fs");const args=process.argv.slice(2),input=JSON.parse(fs.readFileSync(0,"utf8").trim()),systemIndex=args.indexOf("--system-prompt"),systemPrompt=args[systemIndex+1],image=input.message.content.find(part=>part.type==="image");fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({args,systemPrompt,mediaType:image?.source?.media_type,hasImage:Boolean(image?.source?.data),maxThinkingTokens:process.env.MAX_THINKING_TOKENS}));const result={intent:"answer",observedText:"image",message:process.env.AI_API_KEY?"leaked":"ok",commands:[]};process.stdout.write(JSON.stringify({type:"result",subtype:"success",result:JSON.stringify(result)}));\n`);
+  const content = await callClaudeCli({ executable:fakeCli, model:"sonnet", effort:"medium", systemPrompt:"system instructions", prompt:"request metadata", atlasImage:PNG, env:{ ...process.env, AI_API_KEY:"must-not-leak", MAX_THINKING_TOKENS:"9000" } });
   const result = JSON.parse(content), saved = JSON.parse(fs.readFileSync(record, "utf8"));
   assert.equal(result.message, "ok");
   assert.equal(saved.systemPrompt, "system instructions");
   assert.equal(saved.mediaType, "image/png");
   assert.equal(saved.hasImage, true);
   assert.equal(saved.args[saved.args.indexOf("--model") + 1], "sonnet");
+  assert.equal(saved.args[saved.args.indexOf("--effort") + 1], "medium");
+  assert.deepEqual(JSON.parse(saved.args[saved.args.indexOf("--settings") + 1]), { env:{ CLAUDE_CODE_EFFORT_LEVEL:"medium" } });
+  assert.equal(saved.maxThinkingTokens, undefined);
+});
+
+test("Claude CLI none keeps the current thinking-disabled runtime", async () => {
+  const directory = temporaryDirectory(), fakeCli = path.join(directory, "fake-claude.js"), record = path.join(directory, "record.json");
+  fs.writeFileSync(fakeCli, `"use strict";const fs=require("node:fs"),args=process.argv.slice(2);fs.readFileSync(0,"utf8");fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({args,maxThinkingTokens:process.env.MAX_THINKING_TOKENS}));const result={intent:"answer",observedText:"image",message:"ok",commands:[]};process.stdout.write(JSON.stringify({type:"result",subtype:"success",result:JSON.stringify(result)}));\n`);
+  await callClaudeCli({ executable:fakeCli, model:"opus", effort:"none", systemPrompt:"system", prompt:"request", atlasImage:PNG });
+  const saved = JSON.parse(fs.readFileSync(record, "utf8"));
+  assert.equal(saved.maxThinkingTokens, "0");
+  assert.equal(saved.args[saved.args.indexOf("--effort") + 1], "low");
+  assert.deepEqual(JSON.parse(saved.args[saved.args.indexOf("--settings") + 1]), { env:{ CLAUDE_CODE_EFFORT_LEVEL:"low" } });
+  assert.equal(saved.args.includes("none"), false);
 });
 
 test("Claude CLI returns on the final result event without waiting for process exit", { timeout:10000 }, async () => {

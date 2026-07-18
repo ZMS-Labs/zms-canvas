@@ -6,7 +6,7 @@ const net = require("net");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
-const { resolveApiConfig } = require("./api-config.js");
+const { anthropicEffortParameters, normalizedApiEffort, resolveApiConfig } = require("./api-config.js");
 const { resolveCodexLaunch } = require("./codex-cli.js");
 const { callClaudeCli, resolveClaudeLaunch } = require("./claude-cli.js");
 const { isPromptExit, runConfigureMenu } = require("./configure-ui.js");
@@ -200,12 +200,13 @@ async function testApiConnection(env, options = {}) {
   const issues = apiConfigurationIssues(env);
   if (issues.length) throw new Error(`API configuration is incomplete: ${issues.join(", ")}`);
   const apiUrl = apiEnvValue(env, "URL"), format = apiEnvValue(env, "FORMAT").toLowerCase(), model = apiEnvValue(env, "MODEL"), key = apiEnvValue(env, "KEY"),
-    effort = normalizedEffort(env.AI_EFFORT) || "max", api = resolveApiConfig(apiUrl, format || undefined);
+    api = resolveApiConfig(apiUrl, format || undefined);
   if (!api) throw new Error("AI_API_URL and AI_API_FORMAT do not describe a compatible OpenAI or Anthropic endpoint.");
+  const effort = normalizedApiEffort(api.format, env.AI_EFFORT);
   const request = api.format === "anthropic"
     ? {
         headers: { "Content-Type":"application/json", "x-api-key":key, "anthropic-version":"2023-06-01" },
-        body: JSON.stringify({ model, max_tokens:10, temperature:0, output_config:{ effort }, messages:[{ role:"user", content:"Reply with OK." }] }),
+        body: JSON.stringify({ model, max_tokens:10, temperature:0, ...anthropicEffortParameters(effort, false), messages:[{ role:"user", content:"Reply with OK." }] }),
       }
     : {
         headers: { "Content-Type":"application/json", Authorization:`Bearer ${key}` },
@@ -454,7 +455,8 @@ async function runDoctor(args, configuration, options = {}) {
   report(port.ok, port.ok ? `Port ${configuration.port} is available` : `Port ${configuration.port} is unavailable (${port.error})`);
   try { report(true, `Unified model timeout is ${configuredTimeoutSeconds(configuration.env)} seconds`); }
   catch (error) { report(false, error.message); }
-  report(true, `Reasoning effort is ${configuration.env.AI_EFFORT || (configuration.provider === "api" ? "max (API default)" : "the CLI default")}`);
+  const defaultEffort = apiEnvValue(configuration.env, "FORMAT").toLowerCase() === "anthropic" ? "medium (Anthropic API default)" : "max (OpenAI API default)";
+  report(true, `Reasoning effort is ${configuration.env.AI_EFFORT || (configuration.provider === "api" ? defaultEffort : "the CLI default")}`);
   if (configuration.provider === "codex-cli") report(true, `Model is ${configuration.env.CODEX_CLI_MODEL || "the Codex CLI default for PenEcho's isolated session"}`);
   if (configuration.provider === "claude-cli") report(true, `Model is ${configuration.env.CLAUDE_CLI_MODEL || "the Claude CLI default"}`);
 
@@ -480,7 +482,7 @@ function applyConfiguration(env) {
 }
 
 function helpText() {
-  return `PenEcho ${PACKAGE_JSON.version}\n\nUsage:\n  penecho [--config FILE] [--port 3888]\n  penecho configure [--config FILE]\n  penecho doctor [--api|--codex|--claude] [--config FILE]\n  penecho --codex [--model MODEL] [--effort LEVEL]\n  penecho --claude [--model MODEL] [--effort LEVEL]\n\nOptions:\n  --config <file>   Use this configuration file instead of ~/.penecho/config.env\n  --api             Use an OpenAI-compatible or Anthropic-compatible API\n  --codex           Use the authenticated Codex CLI\n  --claude          Use the authenticated Claude CLI\n  --model <model>   Override the model for Codex or Claude CLI mode\n  --effort <level>  Override reasoning effort with a known or CLI-supported value\n  --port <port>     Override the configured listening port\n  -h, --help        Show help\n  -v, --version     Show version\n\nRun \`penecho configure\` for the interactive configuration center. Known effort values include low, medium, high, xhigh, and max; other strings are passed through.\n\nExamples:\n  penecho configure\n  penecho\n  penecho --config ./team.env\n  penecho --codex --model gpt-5.6-sol --effort xhigh\n`;
+  return `PenEcho ${PACKAGE_JSON.version}\n\nUsage:\n  penecho [--config FILE] [--port 3888]\n  penecho configure [--config FILE]\n  penecho doctor [--api|--codex|--claude] [--config FILE]\n  penecho --codex [--model MODEL] [--effort LEVEL]\n  penecho --claude [--model MODEL] [--effort LEVEL]\n\nOptions:\n  --config <file>   Use this configuration file instead of ~/.penecho/config.env\n  --api             Use an OpenAI-compatible or Anthropic-compatible API\n  --codex           Use the authenticated Codex CLI\n  --claude          Use the authenticated Claude CLI\n  --model <model>   Override the model for Codex or Claude CLI mode\n  --effort <level>  Override reasoning effort with a known or CLI-supported value\n  --port <port>     Override the configured listening port\n  -h, --help        Show help\n  -v, --version     Show version\n\nRun \`penecho configure\` for the interactive configuration center. Known effort values include none (Anthropic API and Claude CLI), low, medium, high, xhigh, and max; other strings are passed through.\n\nExamples:\n  penecho configure\n  penecho\n  penecho --config ./team.env\n  penecho --codex --model gpt-5.6-sol --effort xhigh\n`;
 }
 
 async function main(argv = process.argv.slice(2), options = {}) {

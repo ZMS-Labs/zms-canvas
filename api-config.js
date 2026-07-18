@@ -28,4 +28,22 @@ function resolveApiConfig(value, formatOverride) {
   }
 }
 
-module.exports = { resolveApiConfig };
+function normalizedApiEffort(format, value) {
+  const effort = String(value || "").trim();
+  return effort || (format === "anthropic" ? "medium" : "max");
+}
+
+function anthropicEffortParameters(effort, enableThinking = true) {
+  const normalized = normalizedApiEffort("anthropic", effort);
+  if (normalized.toLowerCase() === "none") return { thinking: { type:"disabled" } };
+  return {
+    ...(enableThinking ? { thinking: { type:"adaptive" } } : {}),
+    output_config: { effort:normalized },
+  };
+}
+
+function anthropicResponseMaxTokens(effort) {
+  return String(effort || "").trim().toLowerCase() === "max" ? 16384 : 8192;
+}
+
+module.exports = { anthropicEffortParameters, anthropicResponseMaxTokens, normalizedApiEffort, resolveApiConfig };

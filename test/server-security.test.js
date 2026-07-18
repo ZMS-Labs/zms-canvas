@@ -251,15 +251,31 @@ test("global API effort maps to OpenAI and Anthropic request fields", { timeout:
     assert.equal(JSON.parse(openai.requests[0]).reasoning_effort,"max");
   } finally { await stopServer(openaiServer.child); await new Promise(resolve=>openai.server.close(resolve)); }
 
-  const anthropic=await startApiServer(undefined,{format:"anthropic"}),anthropicServer=await startServer(apiServerEnv(anthropic.origin,{AI_API_FORMAT:"anthropic",AI_API_URL:anthropic.origin,AI_EFFORT:"future-model-level"}));
+  const anthropic=await startApiServer(undefined,{format:"anthropic"}),anthropicServer=await startServer(apiServerEnv(anthropic.origin,{AI_API_FORMAT:"anthropic",AI_API_URL:anthropic.origin,AI_EFFORT:"max"}));
   try {
     const response=await fetch(`${anthropicServer.origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(validPayload())});
     assert.equal(response.status,200);
     const request=JSON.parse(anthropic.requests[0]);
-    assert.equal(request.output_config.effort,"future-model-level");
-    assert.equal(request.max_tokens,8192);
+    assert.deepEqual(request.thinking,{type:"adaptive"});
+    assert.equal(request.output_config.effort,"max");
+    assert.equal(request.temperature,undefined);
+    assert.equal(request.max_tokens,16384);
     assert.match(request.system,/within approximately 4096 tokens/);
+    assert.match(request.system,/no more than roughly 7000 tokens/);
+    assert.match(request.system,/Reserve sufficient output budget for one complete valid JSON response/);
   } finally { await stopServer(anthropicServer.child); await new Promise(resolve=>anthropic.server.close(resolve)); }
+
+  const disabled=await startApiServer(undefined,{format:"anthropic"}),disabledServer=await startServer(apiServerEnv(disabled.origin,{AI_API_FORMAT:"anthropic",AI_API_URL:disabled.origin,AI_EFFORT:"none"}));
+  try {
+    const response=await fetch(`${disabledServer.origin}/api/ai/command`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(validPayload())});
+    assert.equal(response.status,200);
+    const request=JSON.parse(disabled.requests[0]);
+    assert.deepEqual(request.thinking,{type:"disabled"});
+    assert.equal(request.output_config,undefined);
+    assert.equal(request.temperature,undefined);
+    assert.equal(request.max_tokens,8192);
+    assert.doesNotMatch(request.system,/no more than roughly 7000 tokens/);
+  } finally { await stopServer(disabledServer.child); await new Promise(resolve=>disabled.server.close(resolve)); }
 });
 
 test("Anthropic output exhaustion reports the real response limit instead of a JSON parser error", { timeout:20000 }, async () => {

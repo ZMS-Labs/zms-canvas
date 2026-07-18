@@ -7,7 +7,7 @@ const crypto = require("crypto");
 const os = require("os");
 const net = require("net");
 const { URL } = require("url");
-const { resolveApiConfig } = require("./api-config.js");
+const { anthropicEffortParameters, anthropicResponseMaxTokens, normalizedApiEffort, resolveApiConfig } = require("./api-config.js");
 const { callCodexCli } = require("./codex-cli.js");
 const { callClaudeCli } = require("./claude-cli.js");
 let sharp = null;
@@ -21,8 +21,8 @@ const API_FORMAT = firstNonEmpty(process.env.AI_API_FORMAT, process.env.OPENAI_A
 const API_KEY = firstNonEmpty(process.env.AI_API_KEY, process.env.OPENAI_API_KEY);
 const MAX_BODY = 9 * 1024 * 1024;
 const DEFAULT_MODEL_TIMEOUT_MS = 180000;
-const ANTHROPIC_RESPONSE_MAX_TOKENS = 8192;
 const MODEL_FINAL_JSON_TARGET_TOKENS = 4096;
+const ANTHROPIC_MAX_EFFORT_THINKING_TARGET_TOKENS = 7000;
 const LOG_DIR = process.env.PENECHO_STATE_DIR ? path.resolve(process.env.PENECHO_STATE_DIR, "logs") : path.join(ROOT, "logs");
 const LOG_FILE = path.join(LOG_DIR, "penecho.log");
 const REQUEST_TRACE_DIR = path.join(LOG_DIR, "requests");
@@ -33,7 +33,7 @@ const MODEL = firstNonEmpty(process.env.AI_API_MODEL, process.env.OPENAI_MODEL);
 const API = resolveApiConfig(API_BASE_URL, API_FORMAT);
 const AI_IMAGE_FORMAT = normalizeAiImageFormat(process.env.PENECHO_AI_IMAGE_FORMAT);
 const AI_EFFORT = String(process.env.AI_EFFORT || "").trim() || null,
-  API_EFFORT = AI_PROVIDER === "api" ? AI_EFFORT || "max" : null;
+  API_EFFORT = AI_PROVIDER === "api" ? normalizedApiEffort(API?.format, AI_EFFORT) : null;
 const autoDelayValue = process.env.AUTO_AI_DELAY_SECONDS?.trim();
 const configuredAutoDelay = autoDelayValue ? Number(autoDelayValue) : NaN;
 const AUTO_AI_DELAY_MS = Number.isFinite(configuredAutoDelay) && configuredAutoDelay >= 0 && configuredAutoDelay <= 60 ? Math.round(configuredAutoDelay * 1000) : 1200;
@@ -119,9 +119,12 @@ function providerRequest(key, model, text, atlasImage = null) {
           { type: "image", source: { type: "base64", media_type: image.mimeType, data: image.base64 } },
         ]
       : text;
+    const effortParameters = anthropicEffortParameters(API_EFFORT, Boolean(atlasImage)),
+      maxTokens = atlasImage ? anthropicResponseMaxTokens(API_EFFORT) : 10,
+      system = atlasImage ? anthropicSystemPrompt(API_EFFORT) : null;
     return {
       headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model, max_tokens: atlasImage ? ANTHROPIC_RESPONSE_MAX_TOKENS : 10, temperature: atlasImage ? 0.15 : 0, output_config: { effort: API_EFFORT }, ...(atlasImage ? { system: ACTIVE_SYSTEM_PROMPT } : {}), messages: [{ role: "user", content }] }),
+      body: JSON.stringify({ model, max_tokens:maxTokens, ...(!atlasImage ? { temperature:0 } : {}), ...effortParameters, ...(system ? { system } : {}), messages: [{ role: "user", content }] }),
     };
   }
   const messages = atlasImage
@@ -156,6 +159,11 @@ You are responsible for text layout. Every write_text command MUST explicitly ch
 const ACTIVE_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 
 Use only this unified draw syntax; do not invent alternate shape tools. One draw command may mix many primitives and is edited as one draft. origin is one global [x,y] integer pair near the diagram; coordinate and size values in items are integers relative to that origin, while arc angles are integer degrees. types and items must have the same length and matching zero-based indices. Encodings: line and smooth use [x1,y1,x2,y2,...] with at least two points; rect uses [x,y,w,h] from its top-left with positive w/h; ellipse uses [cx,cy,rx,ry] with positive radii; circle uses [cx,cy,r]; arc uses [cx,cy,rx,ry,startDeg,sweepDeg] with positive radii and nonzero signed sweep. Arc angle 0 points right; because canvas y increases downward, a positive sweep is clockwise and a negative sweep is counter-clockwise. line connects points in order. smooth automatically passes through its points. closed lists line/smooth item indices to close. fill lists closed line/smooth, rect, ellipse, or circle indices to fill translucently. arrows lists line, smooth, or arc indices that receive an arrowhead at the end; an arrowed path must have a nonzero final direction. Omit empty index arrays. width is an optional integer 2..200, default 30. tension is an optional integer 0..100 for smooth items, default 50. Use at most 64 items. Keep all resulting geometry inside the 20000 by 20000 canvas. Prefer exactly one draw command for a coherent diagram to avoid repeated JSON and global coordinates. Example: {"tool":"draw","origin":[9000,7000],"types":["line","smooth","rect","ellipse","circle","arc"],"items":[[0,0,300,0,300,200],[400,200,500,100,600,200],[700,0,300,200],[1200,100,180,100],[1600,100,90],[1900,100,160,100,180,180]],"arrows":[0],"fill":[2]}.`;
+
+function anthropicSystemPrompt(effort) {
+  if (String(effort || "").trim().toLowerCase() !== "max") return ACTIVE_SYSTEM_PROMPT;
+  return `${ACTIVE_SYSTEM_PROMPT}\n\nReason efficiently and avoid unnecessary exploration. Keep internal reasoning concise, aiming for no more than roughly ${ANTHROPIC_MAX_EFFORT_THINKING_TARGET_TOKENS} tokens. Reserve sufficient output budget for one complete valid JSON response. If reasoning becomes lengthy, stop exploring and return the best valid JSON immediately.`;
+}
 
 const THEME_PERSONAS = {
   research: "Rigorous mathematical-physics research and teaching mentor. Prioritize assumptions, derivations, units, physical interpretation, proofs, and verifiable code or numerical checks when useful. Be concise but academically precise; never claim to literally be Einstein unless asked for roleplay.",
@@ -602,7 +610,7 @@ async function callModel(modelInput, atlasImage, retryInstruction="", externalSi
     catch(error){
       const upstream={...upstreamResponseTrace(response,raw),rawContent:content};
       if(upstream.finishReason==="max_tokens"){
-        const limitError=new Error(`Model reached the ${ANTHROPIC_RESPONSE_MAX_TOKENS}-token response allowance before completing its final JSON. Retry or lower the reasoning effort.`);
+        const limitError=new Error(`Model reached the ${anthropicResponseMaxTokens(API_EFFORT)}-token response allowance before completing its final JSON. Retry or lower the reasoning effort.`);
         limitError.name="ModelOutputLimitError";
         limitError.upstream=upstream;
         throw limitError;

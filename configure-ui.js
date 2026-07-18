@@ -134,12 +134,14 @@ async function chooseModel(ui, provider, configuration) {
 
 async function chooseEffort(ui, provider, current, format = "") {
   const isCodex = provider === PROVIDERS.codex, isClaude = provider === PROVIDERS.claude,
-    defaultValue = current || (format === "anthropic" || isClaude ? "max" : "xhigh");
+    defaultValue = current || (format === "anthropic" ? "medium" : isClaude ? "max" : "xhigh");
   const levels = isCodex
     ? [["low","Low"],["medium","Medium"],["high","High"],["xhigh","Extra high (maximum for Codex)"]]
     : isClaude
-      ? [["low","Low"],["medium","Medium"],["high","High"],["max","Max"]]
-      : [["low","Low"],["medium","Medium"],["high","High"],["xhigh","Extra high (OpenAI-compatible maximum)"],["max","Max (Anthropic-compatible)"]];
+      ? [["none","None (thinking disabled)"],["low","Low"],["medium","Medium"],["high","High"],["max","Max"]]
+      : format === "anthropic"
+        ? [["none","None (thinking disabled)"],["low","Low"],["medium","Medium (recommended)"],["high","High"],["max","Max"]]
+        : [["low","Low"],["medium","Medium"],["high","High"],["xhigh","Extra high (OpenAI-compatible maximum)"],["max","Max"]];
   const choices = [
     ...((isCodex || isClaude) ? [{ name:`Use the ${isCodex ? "Codex" : "Claude"} CLI default`, value:"", description:"Do not pass an explicit effort." }] : []),
     ...levels.map(([value, name]) => ({ name, value })),
@@ -212,7 +214,7 @@ async function configureApi(ui, configuration, options) {
       } catch { return "Enter a valid HTTP(S) URL."; }
     })),
     model = cleanText(await ui.input("Model", defaultModel, textValidator("Model"))),
-    effort = await chooseEffort(ui, PROVIDERS.api, cleanText(env.AI_EFFORT), format),
+    effort = await chooseEffort(ui, PROVIDERS.api, sameFormat ? cleanText(env.AI_EFFORT) : "", format),
     currentKey = apiValue(env, "KEY"), enteredKey = cleanText(await ui.password(currentKey ? "API key (leave blank to keep the saved key)" : "API key")),
     key = enteredKey || currentKey;
   if (!key) {
