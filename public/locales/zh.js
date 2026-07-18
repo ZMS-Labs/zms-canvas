@@ -2,7 +2,7 @@
 
 window.PENECHO_LOCALES = window.PENECHO_LOCALES || {};
 window.PENECHO_LOCALES.zh = {
-  title: "PenEcho | 手写 AI 画板",
+  title: "ZMS Canvas | 手写 AI 画板",
   tagline: "在两万格羊皮卷上书写，召来知识的回声",
   taglineArcane: "跨学科联想、直觉讲解与创意探索",
   taglineScifi: "工程、编程、系统设计与未来技术分析",
@@ -72,7 +72,7 @@ window.PENECHO_LOCALES.zh = {
   explain: "解释",
   plot: "绘图",
   tip: "触控笔书写 · 手指平移 · 双指缩放 · 滚轮缩放 · 中键或 Alt 拖动平移",
-  debugTitle: "PenEcho 调试",
+  debugTitle: "ZMS Canvas 调试",
   openLocalLog: "打开本机服务日志",
   history: "本地历史",
   historyTitle: "本地画布历史",

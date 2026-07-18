@@ -18,6 +18,8 @@ test("the modified distribution has a distinct ZMS Canvas identity", () => {
   assert.doesNotMatch(read("README.md"), /penecho-readme-header\.png/i);
   assert.match(read("public/index.html"), /ZMS Canvas/);
   assert.match(read("public/index.html"), /https:\/\/github\.com\/ZMS-Labs\/zms-canvas/);
+  assert.match(read("public/locales/zh.js"), /title: "ZMS Canvas \| 手写 AI 画板"/);
+  assert.match(read("public/locales/zh.js"), /debugTitle: "ZMS Canvas 调试"/);
   assert.match(read("Dockerfile"), /^FROM node:22-bookworm@sha256:[a-f0-9]{64}$/m);
   assert.match(read("Dockerfile"), /USER 1000:1000/);
   assert.match(read("Dockerfile"), /EXPOSE 3888/);
