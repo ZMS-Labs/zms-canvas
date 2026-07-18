@@ -25,6 +25,7 @@
     let acknowledgedVersion = 0;
     let timerId = null;
     let inFlight = null;
+    let operationTail = Promise.resolve();
 
     function cancelTimer() {
       if (timerId !== null) timers.clearTimeout(timerId);
@@ -58,59 +59,74 @@
       schedule();
     }
 
+    function enqueue(operation) {
+      const result = operationTail.then(operation, operation);
+      operationTail = result.catch(function () {});
+      return result;
+    }
+
     function flush() {
-      if (!enabled) return Promise.resolve(currentNotebook);
       if (inFlight) return inFlight;
-      if (dirtyVersion === acknowledgedVersion) return Promise.resolve(currentNotebook);
-      cancelTimer();
-      const savingVersion = dirtyVersion;
       let saveAcknowledged = false;
-      inFlight = Promise.resolve()
-        .then(capture)
-        .then(copyCanvasPayload)
-        .then(async function (payload) {
-          const original = currentNotebook;
-          const pending = {
-            notebookId: original ? original.id : null,
-            baseRevision: original ? original.revision : null,
-            capturedAt: now(),
-            payload,
-          };
-          reportStatus("Saving…");
-          await recovery.put(pending);
-          try {
-            const acknowledged = original && original.id
-              ? await api.update(original.id, { ...payload, baseRevision: original.revision })
-              : await api.create(payload);
-            currentNotebook = copyCompleteNotebook(acknowledged);
-            reportStatus("Saved");
-          } catch (error) {
-            if (!original || error.status !== 409) throw error;
-            const conflictPayload = {
-              ...payload,
-              title: makeConflictTitle(payload.title, now()),
-            };
-            currentNotebook = copyCompleteNotebook(await api.create(conflictPayload));
-            reportStatus("Conflict copy saved");
-          }
-          await recovery.clear();
+      const operation = enqueue(async function () {
+        if (!enabled) return currentNotebook;
+        if (dirtyVersion === acknowledgedVersion) return currentNotebook;
+        cancelTimer();
+        const savingVersion = dirtyVersion;
+        const original = currentNotebook;
+        const payload = copyCanvasPayload(await capture());
+        const operationToken = createOperationToken();
+        const pending = {
+          operationToken,
+          notebookId: original ? original.id : null,
+          baseRevision: original ? original.revision : null,
+          capturedAt: now(),
+          payload,
+        };
+        reportStatus("Saving…");
+        await recovery.put(pending);
+        try {
+          const acknowledged = original && original.id
+            ? await api.update(original.id, { ...payload, baseRevision: original.revision })
+            : await api.create(payload);
+          currentNotebook = copyCompleteNotebook(acknowledged);
           acknowledgedVersion = savingVersion;
           saveAcknowledged = true;
-          return currentNotebook;
-        })
+          await finishRecovery(operationToken, "Saved");
+        } catch (error) {
+          if (!original || error.status !== 409) throw error;
+          const conflictPayload = {
+            ...payload,
+            title: makeConflictTitle(payload.title, now()),
+          };
+          currentNotebook = copyCompleteNotebook(await api.create(conflictPayload));
+          acknowledgedVersion = savingVersion;
+          saveAcknowledged = true;
+          await finishRecovery(operationToken, "Conflict copy saved");
+        }
+        return currentNotebook;
+      });
+      const tracked = operation
         .catch(function (error) {
           reportStatus("Save failed", error);
           throw error;
         })
         .finally(function () {
-          inFlight = null;
-          if (saveAcknowledged) schedule();
+          if (inFlight === tracked) {
+            inFlight = null;
+            if (saveAcknowledged) schedule();
+          }
         });
-      return inFlight;
+      inFlight = tracked;
+      return tracked;
     }
 
-    async function load(id) {
-      if (!enabled) return currentNotebook;
+    function load(id) {
+      return enqueue(function () { return runLoad(id); });
+    }
+
+    async function runLoad(id) {
+      if (!enabled) return Promise.resolve(currentNotebook);
       const notebook = copyCompleteNotebook(await api.get(id));
       await apply(notebook);
       currentNotebook = notebook;
@@ -118,7 +134,11 @@
       return currentNotebook;
     }
 
-    async function restore(id, revision) {
+    function restore(id, revision) {
+      return enqueue(function () { return runRestore(id, revision); });
+    }
+
+    async function runRestore(id, revision) {
       if (!enabled) return null;
       if (!currentNotebook || currentNotebook.id !== id) {
         throw Error("Restore requires the notebook to be current");
@@ -140,7 +160,11 @@
       }
     }
 
-    async function remove(id) {
+    function remove(id) {
+      return enqueue(function () { return runRemove(id); });
+    }
+
+    async function runRemove(id) {
       if (!enabled) return false;
       const result = await api.delete(id);
       if (currentNotebook && currentNotebook.id === id) {
@@ -150,11 +174,17 @@
       return Boolean(result && result.deleted);
     }
 
-    async function importLegacy(snapshot) {
+    function importLegacy(snapshot) {
+      return enqueue(function () { return runImportLegacy(snapshot); });
+    }
+
+    async function runImportLegacy(snapshot) {
       if (!enabled) return null;
       const payload = copyCanvasPayload(snapshot);
+      const operationToken = createOperationToken();
       reportStatus("Saving…");
       await recovery.put({
+        operationToken,
         notebookId: null,
         baseRevision: null,
         capturedAt: now(),
@@ -162,13 +192,21 @@
       });
       try {
         currentNotebook = copyCompleteNotebook(await api.create(payload));
-        await recovery.clear();
         resetDirtyState();
-        reportStatus("Saved");
+        await finishRecovery(operationToken, "Saved");
         return currentNotebook;
       } catch (error) {
         reportStatus("Save failed", error);
         throw error;
+      }
+    }
+
+    async function finishRecovery(operationToken, successStatus) {
+      try {
+        await recovery.clear(operationToken);
+        reportStatus(successStatus);
+      } catch (error) {
+        reportStatus("Saved with recovery warning", error);
       }
     }
 
@@ -244,6 +282,16 @@
     return `${[...title].slice(0, available).join("")}${suffix}`;
   }
 
+  let fallbackOperationCounter = 0;
+
+  function createOperationToken() {
+    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+      return globalThis.crypto.randomUUID();
+    }
+    fallbackOperationCounter += 1;
+    return `${Date.now()}-${fallbackOperationCounter}-${Math.random().toString(36).slice(2)}`;
+  }
+
   function createNotebookHttpApi(options) {
     const config = options || {};
     const fetchRequest = config.fetch || globalThis.fetch;
@@ -297,7 +345,6 @@
     const indexedDb = config.indexedDB || globalThis.indexedDB;
     const databaseName = config.databaseName || "zms-canvas-notebook-recovery";
     const storeName = config.storeName || "pending-saves";
-    const recordKey = config.recordKey || "pending";
     if (!indexedDb || typeof indexedDb.open !== "function") throw Error("IndexedDB is required");
     let databasePromise = null;
 
@@ -329,9 +376,22 @@
     }
 
     return {
-      put: function (record) { return transact("readwrite", function (store) { return store.put(record, recordKey); }); },
-      get: function () { return transact("readonly", function (store) { return store.get(recordKey); }); },
-      clear: function () { return transact("readwrite", function (store) { return store.delete(recordKey); }); },
+      put: function (record) {
+        if (!record || typeof record.operationToken !== "string" || !record.operationToken) {
+          return Promise.reject(Error("Recovery operation token is required"));
+        }
+        return transact("readwrite", function (store) { return store.put(record, record.operationToken); });
+      },
+      get: function (operationToken) {
+        return transact("readonly", function (store) { return store.get(operationToken); });
+      },
+      list: async function () {
+        const records = await transact("readonly", function (store) { return store.getAll(); });
+        return records || [];
+      },
+      clear: function (operationToken) {
+        return transact("readwrite", function (store) { return store.delete(operationToken); });
+      },
     };
   }
 

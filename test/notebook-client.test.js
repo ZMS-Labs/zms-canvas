@@ -2,6 +2,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
 
 const {
   createNotebookController,
@@ -84,7 +87,7 @@ function createController(options = {}) {
   const controller = createNotebookController({
     api,
     recovery: options.recovery || { async put() {}, async get() { return null; }, async clear() {} },
-    capture: () => captures[Math.min(captureIndex++, captures.length - 1)],
+    capture: options.capture || (() => captures[Math.min(captureIndex++, captures.length - 1)]),
     apply: options.apply || (async () => {}),
     status: options.status || (() => {}),
     debounceMs: 2000,
@@ -149,6 +152,107 @@ test("waits for an in-flight acknowledgment before saving a later mutation", asy
   assert.equal(calls[1].method, "update");
   assert.equal(calls[1].payload.baseRevision, 1);
   assert.equal(controller.current().revision, 2);
+});
+
+test("binds the save target before deferred capture and loads only after that save", async () => {
+  const original = { id: "notebook-a", revision: 1, ...canvasPayload("A") };
+  const loaded = { id: "notebook-b", revision: 3, ...canvasPayload("B") };
+  const captured = deferred();
+  const events = [];
+  const api = {
+    calls: [],
+    async update(id, payload) {
+      events.push(`update:${id}:${payload.baseRevision}`);
+      return { id, revision: payload.baseRevision + 1, ...payload };
+    },
+    async get(id) {
+      events.push(`get:${id}`);
+      return loaded;
+    },
+  };
+  const applied = [];
+  const { controller } = createController({
+    api,
+    capture: () => captured.promise,
+    apply: async (payload) => { events.push(`apply:${payload.id}`); applied.push(payload); },
+  });
+  controller.configure({ enabled: true, current: original });
+  controller.markConfirmedMutation();
+
+  const saving = controller.flush();
+  await new Promise((resolve) => setImmediate(resolve));
+  const loading = controller.load(loaded.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, []);
+
+  captured.resolve(canvasPayload("A edited"));
+  await Promise.all([saving, loading]);
+
+  assert.deepEqual(events, ["update:notebook-a:1", "get:notebook-b", "apply:notebook-b"]);
+  assert.equal(applied.length, 1);
+  assert.equal(controller.current().id, loaded.id);
+});
+
+test("a load requested during a deferred save acknowledgment cannot be overwritten by it", async () => {
+  const original = { id: "notebook-a", revision: 1, ...canvasPayload("A") };
+  const loaded = { id: "notebook-b", revision: 4, ...canvasPayload("B") };
+  const acknowledged = deferred();
+  const events = [];
+  const api = {
+    calls: [],
+    update(id, payload) {
+      events.push(`update:${id}`);
+      return acknowledged.promise.then(() => {
+        events.push(`ack:${id}`);
+        return { id, revision: payload.baseRevision + 1, ...payload };
+      });
+    },
+    async get(id) { events.push(`get:${id}`); return loaded; },
+  };
+  const { controller } = createController({
+    api,
+    captures: [canvasPayload("A edited")],
+    apply: async (payload) => { events.push(`apply:${payload.id}`); },
+  });
+  controller.configure({ enabled: true, current: original });
+  controller.markConfirmedMutation();
+
+  const saving = controller.flush();
+  await new Promise((resolve) => setImmediate(resolve));
+  const loading = controller.load(loaded.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["update:notebook-a"]);
+
+  acknowledged.resolve();
+  await Promise.all([saving, loading]);
+
+  assert.deepEqual(events, ["update:notebook-a", "ack:notebook-a", "get:notebook-b", "apply:notebook-b"]);
+  assert.equal(controller.current().id, loaded.id);
+});
+
+test("serializes load and delete so a deleted notebook cannot be applied afterward", async () => {
+  const original = { id: "notebook-a", revision: 1, ...canvasPayload("A") };
+  const loaded = { id: "notebook-b", revision: 2, ...canvasPayload("B") };
+  const applying = deferred();
+  const events = [];
+  const api = {
+    calls: [],
+    async get(id) { events.push(`get:${id}`); return loaded; },
+    async delete(id) { events.push(`delete:${id}`); return { deleted: true }; },
+  };
+  const { controller } = createController({ api, apply: () => applying.promise });
+  controller.configure({ enabled: true, current: original });
+
+  const loading = controller.load(loaded.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  const deleting = controller.delete(loaded.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["get:notebook-b"]);
+
+  applying.resolve();
+  await Promise.all([loading, deleting]);
+  assert.deepEqual(events, ["get:notebook-b", "delete:notebook-b"]);
+  assert.equal(controller.current(), null);
 });
 
 test("writes complete recovery state before sending and clears it only after acknowledgment", async () => {
@@ -263,6 +367,97 @@ test("retains recovery state when creating the conflict copy fails", async () =>
 
   await assert.rejects(controller.flush(), /still offline/);
   assert.notEqual(await recovery.get(), null);
+});
+
+test("isolates overlapping controller recovery records and clears only the acknowledged operation", async () => {
+  const indexedDB = createFakeIndexedDb();
+  const recovery = createIndexedDbRecovery({ indexedDB, databaseName: "shared-recovery" });
+  const acknowledgedA = deferred();
+  const controllerA = createController({
+    recovery,
+    captures: [canvasPayload("Controller A")],
+    api: {
+      calls: [],
+      create(payload) {
+        return acknowledgedA.promise.then(() => ({ id: "a", revision: 1, ...payload }));
+      },
+    },
+  }).controller;
+  const controllerB = createController({
+    recovery,
+    captures: [canvasPayload("Controller B")],
+    api: { calls: [], async create() { throw Error("B offline"); } },
+  }).controller;
+  controllerA.configure({ enabled: true });
+  controllerB.configure({ enabled: true });
+  controllerA.markConfirmedMutation();
+  controllerB.markConfirmedMutation();
+
+  const savingA = controllerA.flush();
+  await new Promise((resolve) => setImmediate(resolve));
+  await assert.rejects(controllerB.flush(), /B offline/);
+
+  let pending = await recovery.list();
+  assert.equal(pending.length, 2);
+  assert.equal(new Set(pending.map(({ operationToken }) => operationToken)).size, 2);
+  const pendingB = pending.find(({ payload }) => payload.title === "Controller B");
+  assert.deepEqual(await recovery.get(pendingB.operationToken), pendingB);
+
+  acknowledgedA.resolve();
+  await savingA;
+  pending = await recovery.list();
+  assert.deepEqual(pending.map(({ payload }) => payload.title), ["Controller B"]);
+});
+
+test("acknowledges a save and schedules its follow-up even when recovery cleanup fails", async () => {
+  const timers = createFakeTimers();
+  const firstAcknowledgment = deferred();
+  const calls = [];
+  const statuses = [];
+  const records = new Map();
+  const recovery = {
+    async put(record) { records.set(record.operationToken, record); },
+    async get(token) { return records.get(token) || null; },
+    async list() { return [...records.values()]; },
+    async clear() { throw Error("cleanup failed"); },
+  };
+  const api = {
+    calls,
+    update(id, payload) {
+      calls.push({ id, payload });
+      if (calls.length === 1) {
+        return firstAcknowledgment.promise.then(() => ({ id, revision: 2, ...payload }));
+      }
+      return Promise.resolve({ id, revision: 3, ...payload });
+    },
+  };
+  const { controller } = createController({
+    api,
+    recovery,
+    timers,
+    captures: [canvasPayload("First"), canvasPayload("Second")],
+    status: (value, error) => statuses.push([value, error && error.message]),
+  });
+  controller.configure({ enabled: true, current: { id: "a", revision: 1, ...canvasPayload("Original") } });
+  controller.markConfirmedMutation();
+
+  const saving = controller.flush();
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.markConfirmedMutation();
+  firstAcknowledgment.resolve();
+  await saving;
+
+  assert.equal(controller.current().revision, 2);
+  assert.equal((await recovery.list()).length, 1);
+  assert.deepEqual(statuses.at(-1), ["Saved with recovery warning", "cleanup failed"]);
+  timers.advance(1999);
+  assert.equal(calls.length, 1);
+
+  timers.advance(1);
+  await controller.flush();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].payload.baseRevision, 2);
+  assert.equal(controller.current().revision, 3);
 });
 
 test("rejects an incomplete load response before applying or replacing the current notebook", async () => {
@@ -406,15 +601,65 @@ test("HTTP adapter maps notebook operations and preserves structured errors", as
   assert.deepEqual(JSON.parse(calls[5].body), { baseRevision: 2, restoreRevision: 1 });
 });
 
+test("script-tag UMD installs the notebook API on globalThis without CommonJS", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../public/notebooks.js"), "utf8");
+  const context = vm.createContext({ console, setTimeout, clearTimeout });
+
+  vm.runInContext(source, context, { filename: "notebooks.js" });
+
+  assert.equal(typeof context.ZMSCanvasNotebooks, "object");
+  assert.equal(typeof context.ZMSCanvasNotebooks.createNotebookController, "function");
+  assert.equal(typeof context.ZMSCanvasNotebooks.createNotebookHttpApi, "function");
+  assert.equal(typeof context.ZMSCanvasNotebooks.createIndexedDbRecovery, "function");
+});
+
 test("IndexedDB recovery adapter persists, reads, and clears one pending record", async () => {
   const indexedDB = createFakeIndexedDb();
   const recovery = createIndexedDbRecovery({ indexedDB, databaseName: "test-recovery" });
-  const pending = { notebookId: "a", baseRevision: 2, payload: canvasPayload() };
+  const pending = { operationToken: "operation-a", notebookId: "a", baseRevision: 2, payload: canvasPayload() };
 
   await recovery.put(pending);
-  assert.deepEqual(await recovery.get(), pending);
-  await recovery.clear();
-  assert.equal(await recovery.get(), null);
+  assert.deepEqual(await recovery.get(pending.operationToken), pending);
+  assert.deepEqual(await recovery.list(), [pending]);
+  await recovery.clear(pending.operationToken);
+  assert.equal(await recovery.get(pending.operationToken), null);
+});
+
+test("IndexedDB recovery changes become visible only when the transaction completes", async () => {
+  const indexedDB = createFakeIndexedDb();
+  const recovery = createIndexedDbRecovery({ indexedDB, databaseName: "commit-boundary" });
+  const pending = { operationToken: "operation-a", payload: canvasPayload() };
+  indexedDB.pauseNextCompletion();
+  let resolved = false;
+
+  const putting = recovery.put(pending).then(() => { resolved = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(indexedDB.peek("commit-boundary", "pending-saves", pending.operationToken), null);
+  assert.equal(resolved, false);
+
+  indexedDB.completeNextTransaction();
+  await putting;
+  assert.deepEqual(indexedDB.peek("commit-boundary", "pending-saves", pending.operationToken), pending);
+});
+
+test("IndexedDB recovery propagates request errors without committing", async () => {
+  const indexedDB = createFakeIndexedDb();
+  const recovery = createIndexedDbRecovery({ indexedDB, databaseName: "request-error" });
+  const pending = { operationToken: "operation-a", payload: canvasPayload() };
+  indexedDB.failNextRequest(Error("request failed"));
+
+  await assert.rejects(recovery.put(pending), /request failed/);
+  assert.equal(indexedDB.peek("request-error", "pending-saves", pending.operationToken), null);
+});
+
+test("IndexedDB recovery rejects transaction aborts and rolls back staged writes", async () => {
+  const indexedDB = createFakeIndexedDb();
+  const recovery = createIndexedDbRecovery({ indexedDB, databaseName: "transaction-abort" });
+  const pending = { operationToken: "operation-a", payload: canvasPayload() };
+  indexedDB.abortNextTransaction(Error("transaction aborted"));
+
+  await assert.rejects(recovery.put(pending), /transaction aborted/);
+  assert.equal(indexedDB.peek("transaction-abort", "pending-saves", pending.operationToken), null);
 });
 
 function jsonResponse(status, body) {
@@ -427,7 +672,11 @@ function jsonResponse(status, body) {
 
 function createFakeIndexedDb() {
   const databases = new Map();
-  return {
+  const pendingCompletions = [];
+  let pauseCompletion = false;
+  let nextRequestError = null;
+  let nextAbortError = null;
+  const indexedDB = {
     open(name) {
       const request = {};
       queueMicrotask(() => {
@@ -438,7 +687,7 @@ function createFakeIndexedDb() {
           database = {
             objectStoreNames: { contains: (storeName) => stores.has(storeName) },
             createObjectStore(storeName) { stores.set(storeName, new Map()); },
-            transaction(storeName) { return fakeTransaction(stores.get(storeName)); },
+            transaction(storeName) { return createTransaction(stores.get(storeName)); },
           };
           databases.set(name, database);
         }
@@ -448,27 +697,87 @@ function createFakeIndexedDb() {
       });
       return request;
     },
-  };
-}
-
-function fakeTransaction(records) {
-  const transaction = {
-    objectStore() {
-      return {
-        put(value, key) { return operation(() => records.set(key, structuredClone(value))); },
-        get(key) { return operation(() => records.get(key)); },
-        delete(key) { return operation(() => records.delete(key)); },
-      };
+    pauseNextCompletion() {
+      pauseCompletion = true;
+    },
+    completeNextTransaction() {
+      const complete = pendingCompletions.shift();
+      if (!complete) throw Error("No pending transaction completion");
+      complete();
+    },
+    failNextRequest(error) {
+      nextRequestError = error;
+    },
+    abortNextTransaction(error) {
+      nextAbortError = error;
+    },
+    peek(databaseName, storeName, key) {
+      const value = databases.get(databaseName)?.transaction(storeName).objectStore().peek(key);
+      return value === undefined ? null : structuredClone(value);
     },
   };
-  function operation(action) {
-    const request = {};
-    queueMicrotask(() => {
-      request.result = action();
-      if (request.onsuccess) request.onsuccess();
-      queueMicrotask(() => { if (transaction.oncomplete) transaction.oncomplete(); });
-    });
-    return request;
+
+  function createTransaction(records) {
+    const stagedChanges = [];
+    const transaction = {
+      objectStore() {
+        return {
+          put(value, key) {
+            return operation(key, () => stagedChanges.push(() => records.set(key, structuredClone(value))));
+          },
+          get(key) {
+            return operation(records.get(key));
+          },
+          getAll() {
+            return operation([...records.values()].map((value) => structuredClone(value)));
+          },
+          delete(key) {
+            return operation(undefined, () => stagedChanges.push(() => records.delete(key)));
+          },
+          peek(key) {
+            return records.get(key);
+          },
+        };
+      },
+    };
+
+    function operation(result, stage) {
+      const request = {};
+      queueMicrotask(() => {
+        if (nextRequestError) {
+          request.error = nextRequestError;
+          nextRequestError = null;
+          if (request.onerror) request.onerror();
+          return;
+        }
+        if (stage) stage();
+        request.result = result;
+        if (request.onsuccess) request.onsuccess();
+        queueMicrotask(finish);
+      });
+      return request;
+    }
+
+    function finish() {
+      if (nextAbortError) {
+        transaction.error = nextAbortError;
+        nextAbortError = null;
+        if (transaction.onabort) transaction.onabort();
+        return;
+      }
+      const complete = () => {
+        stagedChanges.forEach((change) => change());
+        if (transaction.oncomplete) transaction.oncomplete();
+      };
+      if (pauseCompletion) {
+        pauseCompletion = false;
+        pendingCompletions.push(complete);
+      } else {
+        complete();
+      }
+    }
+    return transaction;
   }
-  return transaction;
+
+  return indexedDB;
 }
