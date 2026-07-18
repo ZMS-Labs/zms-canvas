@@ -10,6 +10,8 @@ const { URL } = require("url");
 const { anthropicEffortParameters, anthropicResponseMaxTokens, normalizedApiEffort, resolveApiConfig } = require("./api-config.js");
 const { callCodexCli } = require("./codex-cli.js");
 const { callClaudeCli } = require("./claude-cli.js");
+const { createNotebookApi } = require("./notebook-api.js");
+const { createNotebookStore } = require("./notebook-store.js");
 let sharp = null;
 try { sharp = require("sharp"); } catch {}
 
@@ -691,12 +693,36 @@ function plotFallback(result,changedBox){
 }
 
 const MIME = { ".html":"text/html; charset=utf-8", ".js":"application/javascript; charset=utf-8", ".css":"text/css; charset=utf-8", ".svg":"image/svg+xml", ".png":"image/png" };
+const NOTEBOOKS_ENABLED = optionalBoolean(process.env.PENECHO_NOTEBOOKS_ENABLED) === true;
+const configuredNotebookDb = process.env.PENECHO_NOTEBOOKS_DB?.trim();
+const NOTEBOOKS_DB = configuredNotebookDb
+  ? path.resolve(configuredNotebookDb)
+  : path.resolve(process.env.PENECHO_STATE_DIR?.trim() || ROOT, "notebooks.sqlite");
+const NOTEBOOKS_OWNER_HEADER = process.env.PENECHO_NOTEBOOKS_OWNER_HEADER?.trim() || "x-authentik-uid";
+const NOTEBOOK_BODY_LIMIT = 64 * 1024 * 1024;
+let notebookStore = null;
+let notebookInitializationError = null;
+try {
+  if (NOTEBOOKS_ENABLED) notebookStore = createNotebookStore({ dbPath:NOTEBOOKS_DB });
+} catch (error) {
+  notebookInitializationError = error;
+}
+const notebookApi = createNotebookApi({
+  store:notebookStore,
+  enabled:NOTEBOOKS_ENABLED,
+  ownerHeader:NOTEBOOKS_OWNER_HEADER,
+  bodyLimit:NOTEBOOK_BODY_LIMIT,
+});
+function browserConfig() {
+  return { autoAiDelayMs:AUTO_AI_DELAY_MS, aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS, aiProvider:AI_PROVIDER || "invalid", aiEffort:configuredUiEffort(), notebooks:notebookApi.notebookConfig() };
+}
 const server = http.createServer(async (req, res) => {
   let url;
   try { url = new URL(req.url, "http://localhost"); } catch { return send(res, 400, "Bad Request", "text/plain; charset=utf-8"); }
   if (LOCAL_CLI && !canonicalRequestOrigin(req)) return send(res, 421, { error:"Request Host does not match the configured ZMS Canvas origin." });
-  if (req.method === "GET" && url.pathname === "/api/config") return send(res, 200, { autoAiDelayMs: AUTO_AI_DELAY_MS, aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS, aiProvider: AI_PROVIDER || "invalid", aiEffort:configuredUiEffort() });
-  if (req.method === "GET" && url.pathname === "/api/config.js") return send(res, 200, `window.PENECHO_CONFIG=${JSON.stringify({ autoAiDelayMs: AUTO_AI_DELAY_MS, aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS, aiProvider: AI_PROVIDER || "invalid", aiEffort:configuredUiEffort() })};`, "application/javascript; charset=utf-8");
+  if (req.method === "GET" && url.pathname === "/api/config") return send(res, 200, browserConfig());
+  if (req.method === "GET" && url.pathname === "/api/config.js") return send(res, 200, `window.PENECHO_CONFIG=${JSON.stringify(browserConfig())};`, "application/javascript; charset=utf-8");
+  if (await notebookApi.handle(req, res, url)) return;
   if (req.method === "GET" && url.pathname === "/api/debug/log") {
     if (!DEBUG_ARTIFACTS || !isLoopback(req.socket.remoteAddress) || !isLoopbackHostname(requestHost(req)?.hostname)) return send(res, 404, "Not found", "text/plain; charset=utf-8");
     if (!fs.existsSync(LOG_FILE)) return send(res, 200, "No debug log yet.\n", "text/plain; charset=utf-8");
@@ -846,7 +872,10 @@ const configuredPort = Number(process.env.PORT), PORT = Number.isInteger(configu
 const HOST = process.env.HOST || "0.0.0.0";
 const startupConfigurationError = LOCAL_CLI ? providerConfigurationError() : null;
 if (REQUEST_TRACE_ENABLED && requestTraceLimitValid) pruneRequestTraces();
-if (startupConfigurationError) {
+if (notebookInitializationError) {
+  console.error(`ZMS Canvas notebook database initialization failed: ${notebookInitializationError.message}`);
+  process.exitCode = 1;
+} else if (startupConfigurationError) {
   console.error(`ZMS Canvas configuration error: ${startupConfigurationError}`);
   log({ type:"server-start-error", provider:AI_PROVIDER, error:startupConfigurationError });
   process.exitCode = 1;

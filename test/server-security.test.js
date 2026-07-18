@@ -154,6 +154,23 @@ async function stopServer(child) {
   await closed;
 }
 
+function expectServerStartupFailure(env) {
+  const child = spawn(process.execPath, [path.join(ROOT, "server.js")], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  return new Promise((resolve, reject) => {
+    let stdout = "", stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error(`Server did not fail startup.\n${stdout}\n${stderr}`));
+    }, 3000);
+    child.stdout.on("data", chunk => { stdout += chunk.toString("utf8"); });
+    child.stderr.on("data", chunk => { stderr += chunk.toString("utf8"); });
+    child.once("exit", code => {
+      clearTimeout(timeout);
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
 function validPayload() {
   const box = { x: 0, y: 0, w: 1, h: 1 };
   return {
@@ -184,14 +201,44 @@ test("server uses applied global configuration and one timeout for every executo
 });
 
 test("Codex CLI mode starts with no extra access or model-provider settings", { timeout: 10000 }, async () => {
-  const {child,origin}=await startServer(serverEnv({HOST:"0.0.0.0"}));
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"zms-canvas-disabled-notebooks-")),dbPath=path.join(directory,"never-created","notebooks.sqlite"),{child,origin}=await startServer(serverEnv({HOST:"0.0.0.0",PENECHO_NOTEBOOKS_ENABLED:"false",PENECHO_NOTEBOOKS_DB:dbPath}));
   try {
     const localPage=await fetch(origin);
     assert.equal(localPage.status,200);
     assert.ok(localPage.headers.get("set-cookie"));
     const config=await fetch(`${origin}/api/config`).then(response=>response.json());
     assert.equal(config.aiEffort,"config");
-  } finally { await stopServer(child); }
+    assert.deepEqual(config.notebooks,{enabled:false});
+    const script=await fetch(`${origin}/api/config.js`).then(response=>response.text());
+    assert.match(script,/"notebooks":\{"enabled":false\}/);
+    assert.equal(fs.existsSync(dbPath),false);
+  } finally { await stopServer(child); fs.rmSync(directory,{recursive:true,force:true}); }
+});
+
+test("enabled notebooks initialize SQLite, enforce identity, and keep titles out of logs", { timeout:10000 }, async () => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"zms-canvas-enabled-notebooks-")),dbPath=path.join(directory,"db","notebooks.sqlite"),stateDir=path.join(directory,"state"),{child,origin}=await startServer(serverEnv({PENECHO_STATE_DIR:stateDir,PENECHO_NOTEBOOKS_ENABLED:"true",PENECHO_NOTEBOOKS_DB:dbPath,PENECHO_NOTEBOOKS_OWNER_HEADER:"x-authentik-uid"}));
+  try {
+    const config=await fetch(`${origin}/api/config`).then(response=>response.json());
+    assert.deepEqual(config.notebooks,{enabled:true});
+    assert.equal((await fetch(`${origin}/api/notebooks`)).status,401);
+    assert.equal((await fetch(`${origin}/api/notebooks`,{headers:{"x-authentik-uid":"owner-a"}})).status,200);
+    const png=Buffer.from("89504e470d0a1a0a00000000","hex").toString("base64"),secretTitle="PRIVATE NOTEBOOK TITLE";
+    const created=await fetch(`${origin}/api/notebooks`,{method:"POST",headers:{"content-type":"application/json","x-authentik-uid":"owner-a"},body:JSON.stringify({title:secretTitle,theme:"research",view:{scale:1,panX:0,panY:0},preview:png,tiles:[]})});
+    assert.equal(created.status,201);
+    assert.equal(fs.existsSync(dbPath),true);
+    const logPath=path.join(stateDir,"logs","zms-canvas.log");
+    assert.doesNotMatch(fs.readFileSync(logPath,"utf8"),new RegExp(secretTitle));
+  } finally { await stopServer(child); fs.rmSync(directory,{recursive:true,force:true}); }
+});
+
+test("notebook database initialization failure prevents enabled startup", { timeout:10000 }, async () => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"zms-canvas-bad-notebook-db-"));
+  try {
+    const result=await expectServerStartupFailure(serverEnv({PENECHO_NOTEBOOKS_ENABLED:"true",PENECHO_NOTEBOOKS_DB:directory}));
+    assert.notEqual(result.code,0);
+    assert.match(result.stderr,/notebook database initialization failed/i);
+    assert.doesNotMatch(result.stdout,/ZMS Canvas: http:/);
+  } finally { fs.rmSync(directory,{recursive:true,force:true}); }
 });
 
 test("Claude CLI mode sends the canvas to the authenticated local CLI with the selected model and effort", { timeout:20000 }, async () => {

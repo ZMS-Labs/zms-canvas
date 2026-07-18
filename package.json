@@ -16,6 +16,8 @@
   "files": [
     "cli.js",
     "server.js",
+    "notebook-api.js",
+    "notebook-store.js",
     "api-config.js",
     "configure-ui.js",
     "codex-cli.js",
@@ -39,7 +41,7 @@
     "url": "https://github.com/ZMS-Labs/zms-canvas/issues"
   },
   "scripts": {
-    "check": "node --check cli.js && node --check server.js && node --check api-config.js && node --check configure-ui.js && node --check codex-cli.js && node --check claude-cli.js && node --check public/draw.js && node --check public/selection.js && node --check public/app.js && node --disable-warning=ExperimentalWarning --test",
+    "check": "node --check cli.js && node --check server.js && node --check notebook-api.js && node --check notebook-store.js && node --check api-config.js && node --check configure-ui.js && node --check codex-cli.js && node --check claude-cli.js && node --check public/draw.js && node --check public/selection.js && node --check public/app.js && node --disable-warning=ExperimentalWarning --test",
     "test": "node --disable-warning=ExperimentalWarning --test"
   },
   "engines": {
