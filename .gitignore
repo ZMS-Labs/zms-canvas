@@ -9,6 +9,7 @@ logs/
 test-results/
 playwright-report/
 coverage/
+.worktrees/
 .DS_Store
 Thumbs.db
 local/*
