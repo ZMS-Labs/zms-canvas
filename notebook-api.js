@@ -16,7 +16,8 @@ const CANVAS_SIZE = 20000;
 const TILE_SIZE = 512;
 const MAX_TILE_INDEX = Math.ceil(CANVAS_SIZE / TILE_SIZE) - 1;
 const MAX_TILES = 1600;
-const MAX_SCALE = 64;
+const MIN_SCALE = 0.03;
+const MAX_SCALE = 2;
 
 function sendJson(res, status, body, headers = {}) {
   res.writeHead(status, {
@@ -37,7 +38,7 @@ function readJson(req, limit) {
     const declaredLength = Number(req.headers["content-length"]);
     if (Number.isFinite(declaredLength) && declaredLength > limit) {
       reject(requestError("body_too_large"));
-      req.resume();
+      req.pause();
       return;
     }
     const chunks = [];
@@ -48,6 +49,7 @@ function readJson(req, limit) {
       if (size > limit) {
         if (!settled) {
           settled = true;
+          req.pause();
           reject(requestError("body_too_large"));
         }
         return;
@@ -126,7 +128,7 @@ function canvasPayload(body, bodyLimit) {
     title: title(body.title),
     theme: body.theme,
     view: {
-      scale: boundedNumber(body.view.scale, Number.EPSILON, MAX_SCALE),
+      scale: boundedNumber(body.view.scale, MIN_SCALE, MAX_SCALE),
       panX: boundedNumber(body.view.panX, -CANVAS_SIZE, CANVAS_SIZE),
       panY: boundedNumber(body.view.panY, -CANVAS_SIZE, CANVAS_SIZE),
     },
@@ -155,6 +157,13 @@ function encodeNotebook(notebook) {
 function notebookSummary(notebook) {
   const { tiles, revisionCreatedAt, ...summary } = encodeNotebook(notebook);
   return summary;
+}
+
+function sendBodyTooLarge(req, res) {
+  req.pause();
+  res.shouldKeepAlive = false;
+  res.once("finish", () => req.destroy());
+  return sendJson(res, 413, { error: "body_too_large" }, { Connection: "close" });
 }
 
 function createNotebookApi({ store, enabled, ownerHeader, bodyLimit }) {
@@ -235,7 +244,7 @@ function createNotebookApi({ store, enabled, ownerHeader, bodyLimit }) {
         });
       }
       if (error?.code === "body_too_large") {
-        return sendJson(res, 413, { error: "body_too_large" });
+        return sendBodyTooLarge(req, res);
       }
       if (error?.code === "invalid_json" || error?.code === "invalid_payload") {
         return sendJson(res, 400, { error: error.code === "invalid_json" ? "invalid_json" : "invalid_payload" });

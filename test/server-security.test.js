@@ -192,12 +192,29 @@ function validPayload() {
 }
 
 test("server uses applied global configuration and one timeout for every executor", () => {
-  const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8"), packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8"), packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")), packageLock = JSON.parse(fs.readFileSync(path.join(ROOT, "package-lock.json"), "utf8"));
   assert.doesNotMatch(server, /loadEnv\(path\.join\(ROOT, ["']\.env["']\)\)/);
   assert.match(server, /process\.env\.AI_TIMEOUT_SECONDS/);
   assert.match(server, /MODEL_TIMEOUT_MS/);
   assert.doesNotMatch(packageJson.files.join("\n"), /^\.env(?:\.|$)/m);
   assert.equal(packageJson.scripts.start, undefined);
+  assert.equal(packageJson.engines.node, ">=22.13.0");
+  assert.equal(packageLock.packages[""].engines.node, ">=22.13.0");
+});
+
+test("omitted notebook configuration stays disabled without loading SQLite", { timeout:10000 }, async () => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"zms-canvas-no-sqlite-")),stateDir=path.join(directory,"state"),hook=path.join(directory,"deny-sqlite.cjs");
+  fs.writeFileSync(hook,`"use strict";const Module=require("node:module"),load=Module._load;Module._load=function(request,...args){if(request==="node:sqlite")throw new Error("node:sqlite must stay unloaded");return load.call(this,request,...args)};`);
+  const env=serverEnv({PENECHO_STATE_DIR:stateDir,NODE_OPTIONS:`--require=${hook}`});
+  delete env.PENECHO_NOTEBOOKS_ENABLED;
+  delete env.PENECHO_NOTEBOOKS_DB;
+  let running;
+  try {
+    running=await startServer(env);
+    const config=await fetch(`${running.origin}/api/config`).then(response=>response.json());
+    assert.deepEqual(config.notebooks,{enabled:false});
+    assert.equal(fs.existsSync(path.join(stateDir,"notebooks.sqlite")),false);
+  } finally { if(running)await stopServer(running.child); fs.rmSync(directory,{recursive:true,force:true}); }
 });
 
 test("Codex CLI mode starts with no extra access or model-provider settings", { timeout: 10000 }, async () => {
@@ -229,6 +246,17 @@ test("enabled notebooks initialize SQLite, enforce identity, and keep titles out
     const logPath=path.join(stateDir,"logs","zms-canvas.log");
     assert.doesNotMatch(fs.readFileSync(logPath,"utf8"),new RegExp(secretTitle));
   } finally { await stopServer(child); fs.rmSync(directory,{recursive:true,force:true}); }
+});
+
+test("enabled notebooks default the database beneath PENECHO_STATE_DIR", { timeout:10000 }, async () => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"zms-canvas-default-notebook-db-")),stateDir=path.join(directory,"state"),env=serverEnv({PENECHO_STATE_DIR:stateDir,PENECHO_NOTEBOOKS_ENABLED:"true"});
+  delete env.PENECHO_NOTEBOOKS_DB;
+  const running=await startServer(env);
+  try {
+    const config=await fetch(`${running.origin}/api/config`).then(response=>response.json());
+    assert.deepEqual(config.notebooks,{enabled:true});
+    assert.equal(fs.existsSync(path.join(stateDir,"notebooks.sqlite")),true);
+  } finally { await stopServer(running.child); fs.rmSync(directory,{recursive:true,force:true}); }
 });
 
 test("notebook database initialization failure prevents enabled startup", { timeout:10000 }, async () => {

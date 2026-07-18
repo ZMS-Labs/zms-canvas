@@ -3,7 +3,6 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { DatabaseSync } = require("node:sqlite");
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS notebooks (
@@ -62,6 +61,7 @@ function createNotebookStore({
   now = Date.now,
   randomUUID = crypto.randomUUID,
 }) {
+  const { DatabaseSync } = require("node:sqlite");
   if (!Number.isInteger(revisionLimit) || revisionLimit < 1) {
     throw new RangeError("revisionLimit must be a positive integer");
   }

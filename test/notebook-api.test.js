@@ -80,6 +80,53 @@ async function rawRequest(fixture, method, pathname, body, headers = {}) {
   return { status: response.status, body: text ? JSON.parse(text) : null };
 }
 
+function chunkedOverflowRequest(fixture) {
+  const target = new URL(fixture.origin);
+  return new Promise((resolve, reject) => {
+    const clientRequest = http.request({
+      hostname: target.hostname,
+      port: target.port,
+      method: "POST",
+      path: "/api/notebooks",
+      headers: {
+        "content-type": "application/json",
+        "x-authentik-uid": "owner-a",
+      },
+    });
+    let socket;
+    let writes;
+    let responseStarted = false;
+    clientRequest.on("socket", (value) => { socket = value; });
+    clientRequest.on("error", (error) => {
+      if (!responseStarted) {
+        clearInterval(writes);
+        reject(error);
+      }
+    });
+    clientRequest.on("response", (response) => {
+      responseStarted = true;
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("error", reject);
+      response.on("end", async () => {
+        clearInterval(writes);
+        const socketClosed = await Promise.race([
+          new Promise((done) => socket.destroyed ? done(true) : socket.once("close", () => done(true))),
+          new Promise((done) => setTimeout(() => done(false), 250)),
+        ]);
+        clientRequest.destroy();
+        resolve({
+          status: response.statusCode,
+          body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+          socketClosed,
+        });
+      });
+    });
+    clientRequest.write(`{"padding":"${"x".repeat(256)}`);
+    writes = setInterval(() => clientRequest.write("x".repeat(64)), 5);
+  });
+}
+
 async function createNotebook(fixture, owner = "owner-a") {
   const response = await request(fixture, "POST", "/api/notebooks", payload(), {
     "x-authentik-uid": owner,
@@ -213,6 +260,30 @@ test("rejects malformed canvas payloads before storage", async () => {
   }
 });
 
+test("accepts only the exact canvas scale boundaries", async () => {
+  const fixture = await fixtureServer();
+  try {
+    const owner = { "x-authentik-uid": "owner-a" };
+    for (const scale of [0.03, 2]) {
+      const response = await request(fixture, "POST", "/api/notebooks", {
+        ...payload(),
+        view: { scale, panX: 0, panY: 0 },
+      }, owner);
+      assert.equal(response.status, 201);
+    }
+    for (const scale of [0.03 - Number.EPSILON, 2.0000000000000004]) {
+      const response = await request(fixture, "POST", "/api/notebooks", {
+        ...payload(),
+        view: { scale, panX: 0, panY: 0 },
+      }, owner);
+      assert.equal(response.status, 400);
+      assert.equal(response.body.error, "invalid_payload");
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("enforces the configured independent notebook body limit", async () => {
   const fixture = await fixtureServer({ bodyLimit: 128 });
   try {
@@ -225,6 +296,18 @@ test("enforces the configured independent notebook body limit", async () => {
     );
     assert.equal(response.status, 413);
     assert.equal(response.body.error, "body_too_large");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("terminates a chunked request after returning the streamed body-limit response", async () => {
+  const fixture = await fixtureServer({ bodyLimit: 128 });
+  try {
+    const response = await chunkedOverflowRequest(fixture);
+    assert.equal(response.status, 413);
+    assert.equal(response.body.error, "body_too_large");
+    assert.equal(response.socketClosed, true);
   } finally {
     await fixture.close();
   }
