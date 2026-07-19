@@ -21,11 +21,14 @@ function payload(title = "Persistence smoke") {
 }
 
 function startServer(stateDir) {
-  const child = spawn(process.execPath, [path.join(root, "server.js")], {
+  const child = spawn(process.execPath, [path.join(root, "cli.js")], {
     cwd: root,
     env: {
       ...process.env,
       AI_PROVIDER: "api",
+      AI_API_URL: "http://127.0.0.1:9/v1",
+      AI_API_MODEL: "persistence-smoke-model",
+      AI_API_KEY: "persistence-smoke-key",
       HOST: "127.0.0.1",
       PORT: "0",
       PENECHO_STATE_DIR: stateDir,

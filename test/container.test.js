@@ -24,3 +24,32 @@ test("container build context excludes runtime state and credentials", () => {
     assert.ok(entries.includes(entry), `missing ${entry} from .dockerignore`);
   }
 });
+
+test("container documentation supplies runtime configuration without baking secrets", () => {
+  const readme = read("README.md");
+
+  assert.match(readme, /--env-file/);
+  assert.match(readme, /^AI_PROVIDER=api$/m);
+  assert.match(readme, /^AI_API_URL=/m);
+  assert.match(readme, /^AI_API_MODEL=/m);
+  assert.match(readme, /^AI_API_KEY=/m);
+});
+
+test("CI keeps pull-request builds read-only and publishes immutable images only on main", () => {
+  const workflow = read(".github/workflows/ci.yml");
+  const actions = [...workflow.matchAll(/^\s*uses:\s*([^\s]+)/gm)].map(([, action]) => action);
+  const jobBlock = (name) => {
+    const start = workflow.indexOf(`  ${name}:`);
+    const next = /\n {2}\S[^:\n]*:/.exec(workflow.slice(start + 1));
+    return start < 0 ? "" : workflow.slice(start, next ? start + 1 + next.index : undefined);
+  };
+
+  assert.ok(actions.length > 0);
+  for (const action of actions) assert.match(action, /@[a-f0-9]{40}$/);
+  assert.match(workflow, /image-build:\n\s+if: github\.event_name == 'pull_request'/);
+  assert.match(workflow, /image-publish:\n\s+if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/);
+  assert.doesNotMatch(jobBlock("image-build"), /packages: write/);
+  assert.match(jobBlock("image-publish"), /packages: write/);
+  assert.match(workflow, /type=sha,prefix=sha-,format=long/);
+  assert.doesNotMatch(workflow, /value=latest/);
+});

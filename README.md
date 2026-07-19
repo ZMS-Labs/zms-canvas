@@ -128,11 +128,23 @@ zms-canvas
 
 ### Run the published container
 
-The public image is published as `ghcr.io/zms-labs/zms-canvas` from this source repository. It runs as UID/GID `1000`, carries AGPL/source OCI labels, and keeps persistent notebook data outside the image. Mount a writable directory at `/state`; never copy configuration files, credentials, logs, SQLite files, or notebook data into an image build context.
+The public image is published as `ghcr.io/zms-labs/zms-canvas` from this source repository. It runs as UID/GID `1000`, carries AGPL/source OCI labels, and keeps persistent notebook data outside the image. Mount a writable directory at `/state`; never copy configuration files, credentials, logs, SQLite files, or notebook data into an image build context. The image starts through the package CLI, so supply a complete runtime AI configuration.
+
+Create an env file outside this repository and substitute a real credential before running it:
+
+```env
+AI_PROVIDER=api
+AI_API_URL=https://api.openai.com/v1
+AI_API_MODEL=gpt-5.6-terra
+AI_API_KEY=<real runtime credential>
+PENECHO_NOTEBOOKS_ENABLED=true
+PENECHO_NOTEBOOKS_OWNER_HEADER=x-authentik-uid
+```
 
 ```bash
 docker run --rm -p 3888:3888 \
   -v zms-canvas-state:/state \
+  --env-file /secure/zms-canvas.env \
   ghcr.io/zms-labs/zms-canvas:sha-<commit>
 ```
 
