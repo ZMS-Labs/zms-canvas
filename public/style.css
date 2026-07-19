@@ -248,6 +248,11 @@ button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible
 .notebook-revision button { flex: 0 0 auto; min-height: 25px; padding: 3px 7px; color: var(--gold-bright); font: 700 .65rem/1 system-ui, sans-serif; }
 .notebook-revision button:disabled, .history-actions button:disabled { cursor: default; opacity: .52; }
 .synced-notebook-list[data-busy="true"] { opacity: .72; }
+.notebook-recovery { margin: 0 0 13px; padding: 10px; border: 1px solid color-mix(in srgb, var(--gold) 52%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--gold) 7%, var(--panel-raised)); }
+.notebook-recovery[hidden] { display: none; }
+.notebook-recovery h4 { margin: 0; color: var(--gold-bright); font: 700 .78rem/1.25 system-ui, sans-serif; }
+.notebook-recovery > p { margin: 5px 0 9px; color: var(--muted); font: .69rem/1.4 system-ui, sans-serif; }
+.notebook-recovery .history-card { background: color-mix(in srgb, var(--panel) 90%, var(--gold) 10%); }
 
 .new-canvas-dialog { width: min(520px, calc(100vw - 28px)); padding: 0; color: var(--ink); border: 1px solid var(--line); border-radius: 13px; background: color-mix(in srgb, var(--panel) 98%, transparent); box-shadow: 0 24px 70px #000b; }
 .new-canvas-dialog::backdrop { background: rgba(3, 2, 7, .68); backdrop-filter: blur(3px); }

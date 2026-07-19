@@ -155,6 +155,11 @@
       notebookRestoreError: "Could not restore revision: ",
       notebookCopyError: "Could not copy device snapshot: ",
       notebookSyncError: "Notebook sync unavailable: ",
+      recoveryTitle: "Unsaved recovery copies",
+      recoveryDescription: "These complete device copies were not acknowledged by the server. Recover or dismiss each one.",
+      recoverAsCopy: "Recover as copy",
+      dismissRecovery: "Dismiss",
+      recoveryActionError: "Could not handle recovery copy: ",
       restoreRevisionConfirm: "Restore revision {revision}? The current canvas will be saved as a newer revision.",
       deleteNotebookConfirm: "Delete this synced notebook and all of its revisions?",
       emptyCanvas: "The canvas is empty",
@@ -751,6 +756,7 @@
     snapshotItems = [],
     notebookApi = null,
     notebookController = null,
+    pendingRecoveryItems = [],
     syncedNotebookItems = [];
   function notebookStatusPresentation(value) {
     return {
@@ -792,7 +798,7 @@
     element.title = error?.message || "";
     syncCurrentNotebookState();
     if (value === "Saved" || value === "Conflict copy saved" || value === "Saved with recovery warning") {
-      Promise.resolve().then(refreshSyncedNotebooksSafely);
+      Promise.resolve().then(refreshSyncedNotebooksSafely).then(refreshPendingRecoveriesSafely);
     }
   }
   function setNotebookOperationError(key, error) {
@@ -1051,9 +1057,10 @@
       return { key, canvas };
     });
   }
-  async function applyNotebookCanvas(payload) {
+  async function applyNotebookCanvas(payload, transition) {
     if (!payload || !["arcane", "scifi", "research"].includes(payload.theme) || !payload.view) throw Error("Notebook canvas is invalid");
     const decoded = await decodeNotebookTiles(payload);
+    if (transition && !transition.isCurrent()) return false;
     state.notebookApplying = true;
     try {
       if (state.selection) cancelSelection(true);
@@ -1077,6 +1084,7 @@
       state.currentSnapshotName = "";
       updateCoordinates();
       render();
+      return true;
     } finally {
       state.notebookApplying = false;
     }
@@ -1322,6 +1330,79 @@
   function notebookDate(timestamp) {
     return new Intl.DateTimeFormat(state.language === "zh" ? "zh-CN" : "en", { dateStyle: "short", timeStyle: "short" }).format(timestamp);
   }
+  function renderPendingRecoveries() {
+    const section = document.querySelector("#notebookRecoverySection"),
+      list = document.querySelector("#notebookRecoveryList");
+    if (!section || !list) return;
+    section.hidden = !pendingRecoveryItems.length;
+    list.replaceChildren();
+    for (const item of pendingRecoveryItems) {
+      const card = document.createElement("article"),
+        preview = document.createElement("div"),
+        image = document.createElement("img"),
+        meta = document.createElement("div"),
+        title = document.createElement("strong"),
+        detail = document.createElement("small"),
+        actions = document.createElement("div"),
+        recover = document.createElement("button"),
+        dismiss = document.createElement("button");
+      card.className = "history-card recovery-card";
+      preview.className = "history-preview";
+      image.alt = "";
+      image.src = notebookPreviewUrl(item.payload.preview);
+      preview.append(image);
+      meta.className = "history-meta";
+      title.textContent = item.payload.title;
+      detail.textContent = notebookDate(item.capturedAt);
+      actions.className = "history-actions";
+      recover.className = "history-copy";
+      recover.textContent = t("recoverAsCopy");
+      recover.onclick = () => runRecoveryAction(async () => {
+        await notebookController.recoverAsCopy(item.operationToken);
+        await refreshPendingRecoveriesSafely();
+        await refreshSyncedNotebooksSafely();
+      });
+      dismiss.className = "history-delete";
+      dismiss.textContent = t("dismissRecovery");
+      dismiss.onclick = () => runRecoveryAction(async () => {
+        await notebookController.dismissRecovery(item.operationToken);
+        await refreshPendingRecoveriesSafely();
+      });
+      actions.append(recover, dismiss);
+      meta.append(title, detail, actions);
+      card.append(preview, meta);
+      list.append(card);
+    }
+  }
+  async function refreshPendingRecoveries() {
+    if (!state.notebooksEnabled || !notebookController) pendingRecoveryItems = [];
+    else pendingRecoveryItems = await notebookController.pendingRecoveries();
+    renderPendingRecoveries();
+  }
+  async function refreshPendingRecoveriesSafely() {
+    try {
+      await refreshPendingRecoveries();
+      return true;
+    } catch (error) {
+      setNotebookOperationError("recoveryActionError", error);
+      return false;
+    }
+  }
+  async function runRecoveryAction(action) {
+    const list = document.querySelector("#notebookRecoveryList");
+    if (list.dataset.busy === "true") return;
+    list.dataset.busy = "true";
+    list.querySelectorAll("button").forEach((button) => (button.disabled = true));
+    try {
+      return await action();
+    } catch (error) {
+      setNotebookOperationError("recoveryActionError", error);
+      return null;
+    } finally {
+      delete list.dataset.busy;
+      renderPendingRecoveries();
+    }
+  }
   function renderSyncedNotebookList() {
     const list = document.querySelector("#syncedNotebooks");
     if (!list) return;
@@ -1490,7 +1571,10 @@
         status: reportNotebookStatus,
       });
       notebookController.configure(configuredNotebooks);
-      if (state.notebooksEnabled) refreshSyncedNotebooksSafely();
+      if (state.notebooksEnabled) {
+        refreshPendingRecoveriesSafely();
+        refreshSyncedNotebooksSafely();
+      }
     } catch (error) {
       if (state.notebooksEnabled) setNotebookUnavailable(error);
     }
@@ -1507,6 +1591,7 @@
     panel.setAttribute("aria-hidden", "false");
     button.setAttribute("aria-expanded", "true");
     refreshSnapshots().catch((error) => setStatus(`${t("snapshotError")}${error.message}`));
+    refreshPendingRecoveriesSafely();
     refreshSyncedNotebooksSafely();
   }
   function closeHistoryPanel() {

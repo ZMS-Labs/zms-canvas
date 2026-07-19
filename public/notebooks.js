@@ -11,6 +11,7 @@
     const recovery = options.recovery || {
       put: function () { return Promise.resolve(); },
       get: function () { return Promise.resolve(null); },
+      list: function () { return Promise.resolve([]); },
       clear: function () { return Promise.resolve(); },
     };
     const capture = options.capture;
@@ -136,10 +137,23 @@
 
     async function runLoad(id) {
       if (!enabled) return Promise.resolve(currentNotebook);
-      const notebook = copyCompleteNotebook(await api.get(id));
-      await apply(notebook);
-      currentNotebook = notebook;
-      resetDirtyState();
+      while (enabled) {
+        const loadGeneration = dirtyVersion;
+        const notebook = copyCompleteNotebook(await api.get(id));
+        if (dirtyVersion !== loadGeneration) {
+          await drainDirty();
+          continue;
+        }
+        const transition = { isCurrent: function () { return dirtyVersion === loadGeneration; } };
+        const applied = await apply(notebook, transition);
+        if (applied === false || dirtyVersion !== loadGeneration) {
+          await drainDirty();
+          continue;
+        }
+        currentNotebook = notebook;
+        resetDirtyState();
+        return currentNotebook;
+      }
       return currentNotebook;
     }
 
@@ -233,6 +247,27 @@
       return api.list();
     }
 
+    async function pendingRecoveries() {
+      if (!enabled || typeof recovery.list !== "function") return [];
+      const records = await recovery.list();
+      return records.map(copyRecoveryRecord);
+    }
+
+    function recoverAsCopy(operationToken) {
+      return enqueue(async function () {
+        if (!enabled) return null;
+        const record = copyRecoveryRecord(await recovery.get(operationToken));
+        const notebook = copyCompleteNotebook(await api.create(record.payload));
+        await finishRecovery(operationToken, "Saved");
+        return notebook;
+      });
+    }
+
+    function dismissRecovery(operationToken) {
+      if (!enabled) return Promise.resolve();
+      return enqueue(function () { return recovery.clear(operationToken); });
+    }
+
     function resetDirtyState() {
       cancelTimer();
       dirtyVersion = 0;
@@ -252,7 +287,23 @@
       delete: remove,
       importLegacy,
       list,
+      pendingRecoveries,
+      recoverAsCopy,
+      dismissRecovery,
       current,
+    };
+  }
+
+  function copyRecoveryRecord(value) {
+    if (!value || typeof value !== "object" || typeof value.operationToken !== "string" || !value.operationToken) {
+      throw Error("Pending recovery record is invalid");
+    }
+    return {
+      operationToken: value.operationToken,
+      notebookId: value.notebookId === null || typeof value.notebookId === "string" ? value.notebookId : null,
+      baseRevision: value.baseRevision === null || Number.isInteger(value.baseRevision) ? value.baseRevision : null,
+      capturedAt: Number(value.capturedAt),
+      payload: copyCanvasPayload(value.payload),
     };
   }
 

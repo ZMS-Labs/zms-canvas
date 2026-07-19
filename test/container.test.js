@@ -20,7 +20,7 @@ test("container build context excludes runtime state and credentials", () => {
   const ignored = read(".dockerignore");
 
   const entries = ignored.split(/\r?\n/);
-  for (const entry of ["config.env", "*.sqlite", "logs", "notebooks.sqlite"]) {
+  for (const entry of ["config.env", ".env", ".env.cli", ".env.*", "*.env", "*.sqlite", "logs", "notebooks.sqlite"]) {
     assert.ok(entries.includes(entry), `missing ${entry} from .dockerignore`);
   }
 });

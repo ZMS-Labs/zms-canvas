@@ -169,6 +169,11 @@
           <div><span class="history-source-label" data-i18n="serverSource">Server</span><h3 id="syncedNotebooksTitle" data-i18n="syncedNotebooksTitle">Synced notebooks</h3></div>
         </header>
         <p data-i18n="syncedNotebooksDescription">Saved revisions are available on your connected devices.</p>
+        <section id="notebookRecoverySection" class="notebook-recovery" aria-labelledby="notebookRecoveryTitle" hidden>
+          <h4 id="notebookRecoveryTitle" data-i18n="recoveryTitle">Unsaved recovery copies</h4>
+          <p data-i18n="recoveryDescription">These complete device copies were not acknowledged by the server. Recover or dismiss each one.</p>
+          <div id="notebookRecoveryList" class="history-list" aria-live="polite"></div>
+        </section>
         <div id="syncedNotebooks" class="history-list synced-notebook-list" aria-live="polite"></div>
       </section>
       <section id="deviceSnapshots" class="history-source device-source" aria-labelledby="deviceSnapshotsTitle">

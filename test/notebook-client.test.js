@@ -276,6 +276,90 @@ test("drains an in-flight mutation against A before a queued load replaces it wi
   assert.equal(controller.current().id, loaded.id);
 });
 
+test("drains a mutation confirmed during notebook GET before applying the loaded notebook", async () => {
+  const original = { id: "notebook-a", revision: 1, ...canvasPayload("A") };
+  const loaded = { id: "notebook-b", revision: 4, ...canvasPayload("B") };
+  const firstGet = deferred();
+  const events = [];
+  let getCount = 0;
+  const api = {
+    async get(id) {
+      getCount += 1;
+      events.push(`get:${id}:${getCount}`);
+      return getCount === 1 ? firstGet.promise : loaded;
+    },
+    async update(id, payload) {
+      events.push(`update:${id}:${payload.title}`);
+      return { id, revision: payload.baseRevision + 1, ...payload };
+    },
+  };
+  const { controller } = createController({
+    api,
+    captures: [canvasPayload("A edited during GET")],
+    apply: async (payload) => { events.push(`apply:${payload.id}`); },
+  });
+  controller.configure({ enabled: true, current: original });
+
+  const loading = controller.load(loaded.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.markConfirmedMutation();
+  firstGet.resolve(loaded);
+  await loading;
+
+  assert.deepEqual(events, [
+    "get:notebook-b:1",
+    "update:notebook-a:A edited during GET",
+    "get:notebook-b:2",
+    "apply:notebook-b",
+  ]);
+  assert.equal(controller.current().id, loaded.id);
+});
+
+test("aborts a stale deferred apply and drains its confirmed mutation before retrying", async () => {
+  const original = { id: "notebook-a", revision: 1, ...canvasPayload("A") };
+  const loaded = { id: "notebook-b", revision: 2, ...canvasPayload("B") };
+  const firstApply = deferred();
+  const events = [];
+  let applyCount = 0;
+  const api = {
+    async get(id) { events.push(`get:${id}`); return loaded; },
+    async update(id, payload) {
+      events.push(`update:${id}:${payload.title}`);
+      return { id, revision: payload.baseRevision + 1, ...payload };
+    },
+  };
+  const { controller } = createController({
+    api,
+    captures: [canvasPayload("A edited during decode")],
+    apply: async (payload, transition) => {
+      applyCount += 1;
+      events.push(`apply-start:${payload.id}:${applyCount}`);
+      if (applyCount === 1) await firstApply.promise;
+      const current = transition.isCurrent();
+      events.push(`apply-current:${current}`);
+      return current;
+    },
+  });
+  controller.configure({ enabled: true, current: original });
+
+  const loading = controller.load(loaded.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.markConfirmedMutation();
+  firstApply.resolve();
+  await loading;
+
+  assert.deepEqual(events, [
+    "get:notebook-b",
+    "apply-start:notebook-b:1",
+    "apply-current:false",
+    "update:notebook-a:A edited during decode",
+    "get:notebook-b",
+    "apply-start:notebook-b:2",
+    "apply-current:true",
+  ]);
+  assert.equal(controller.current().id, loaded.id);
+});
+
 test("serializes load and delete so a deleted notebook cannot be applied afterward", async () => {
   const original = { id: "notebook-a", revision: 1, ...canvasPayload("A") };
   const loaded = { id: "notebook-b", revision: 2, ...canvasPayload("B") };
@@ -326,6 +410,73 @@ test("writes complete recovery state before sending and clears it only after ack
 
   assert.deepEqual(events, ["recovery:put", "api:create", "recovery:clear"]);
   assert.equal(await recovery.get(), null);
+});
+
+test("offers pending recovery records and recovers one as a server copy before clearing it", async () => {
+  const payload = canvasPayload("Recovered canvas");
+  const record = {
+    operationToken: "pending-1",
+    notebookId: "notebook-a",
+    baseRevision: 7,
+    capturedAt: 1_700_000_000_000,
+    payload,
+  };
+  let stored = structuredClone(record);
+  const events = [];
+  const recovery = {
+    async list() { return stored ? [stored] : []; },
+    async get(token) { return stored?.operationToken === token ? stored : null; },
+    async clear(token) { events.push(`clear:${token}`); stored = null; },
+    async put() {},
+  };
+  const api = {
+    async create(value) {
+      events.push(`create:${value.title}`);
+      assert.deepEqual(value, payload);
+      return { id: "recovered-copy", revision: 1, ...value };
+    },
+  };
+  const { controller } = createController({ api, recovery });
+  controller.configure({ enabled: true });
+
+  const offered = await controller.pendingRecoveries();
+  assert.deepEqual(offered, [record]);
+  offered[0].payload.tiles[0].png = "mutated outside controller";
+  assert.deepEqual((await controller.pendingRecoveries())[0].payload, payload);
+
+  const recovered = await controller.recoverAsCopy(record.operationToken);
+  assert.equal(recovered.id, "recovered-copy");
+  assert.deepEqual(events, ["create:Recovered canvas", "clear:pending-1"]);
+  assert.deepEqual(await controller.pendingRecoveries(), []);
+});
+
+test("retains a complete pending recovery after server failure and clears it only on dismissal", async () => {
+  const record = {
+    operationToken: "pending-2",
+    notebookId: null,
+    baseRevision: null,
+    capturedAt: 1_700_000_000_000,
+    payload: canvasPayload("Offline recovery"),
+  };
+  let stored = structuredClone(record);
+  const cleared = [];
+  const recovery = {
+    async list() { return stored ? [stored] : []; },
+    async get(token) { return stored?.operationToken === token ? stored : null; },
+    async clear(token) { cleared.push(token); stored = null; },
+    async put() {},
+  };
+  const api = { async create() { throw Error("offline"); } };
+  const { controller } = createController({ api, recovery });
+  controller.configure({ enabled: true });
+
+  await assert.rejects(controller.recoverAsCopy(record.operationToken), /offline/);
+  assert.deepEqual(await controller.pendingRecoveries(), [record]);
+  assert.deepEqual(cleared, []);
+
+  await controller.dismissRecovery(record.operationToken);
+  assert.deepEqual(cleared, ["pending-2"]);
+  assert.deepEqual(await controller.pendingRecoveries(), []);
 });
 
 test("retains recovery state and reports failure when a save fails", async () => {

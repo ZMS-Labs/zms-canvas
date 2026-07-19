@@ -27,6 +27,15 @@ const loadScopedFunctions = (source, names, scope) => {
   const factory = vm.runInNewContext(`(function (${keys.join(",")}) {\n${names.map((name) => functionSource(source, name)).join("\n")}\nreturn { ${names.join(",")} };\n})`);
   return factory(...keys.map((key) => scope[key]));
 };
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+};
 
 test("synchronized notebook controls and canvas integration points are present", () => {
   const html = read("public/index.html");
@@ -37,7 +46,7 @@ test("synchronized notebook controls and canvas integration points are present",
   }
   assert.ok(html.indexOf('src="notebooks.js"') < html.indexOf('src="app.js"'));
   assert.match(app, /function captureNotebookCanvas\(\)/);
-  assert.match(app, /function applyNotebookCanvas\(payload\)/);
+  assert.match(app, /function applyNotebookCanvas\(payload, transition\)/);
   assert.match(app, /markNotebookDirty\(\)/);
 });
 
@@ -71,6 +80,64 @@ test("loaded notebook tiles are decoded before the current canvas is cleared", (
   assert.ok(apply.indexOf("await decodeNotebookTiles(payload)") < apply.indexOf("tiles.clear()"));
   assert.match(apply, /state\.notebookApplying = true/);
   assert.match(apply, /finally\s*{\s*state\.notebookApplying = false/);
+});
+
+test("a stale notebook apply exits before destructive canvas replacement", async () => {
+  const app = read("public/app.js");
+  const decoded = deferred();
+  let current = true;
+  let clearCalls = 0;
+  const state = {
+    notebookApplying: false,
+    selection: null,
+    inkBounds: { clear() { clearCalls++; } },
+    historyBefore: { clear() { clearCalls++; } },
+  };
+  const tiles = { clear() { clearCalls++; }, set() {} };
+  const { applyNotebookCanvas } = loadScopedFunctions(app, ["applyNotebookCanvas"], {
+    decodeNotebookTiles: () => decoded.promise,
+    state,
+    tiles,
+    cancelSelection() {},
+    invalidateRecognition() {},
+    cancelPendingForRevision() {},
+    applyTheme() {},
+    updateCoordinates() {},
+    render() {},
+  });
+  const applying = applyNotebookCanvas({
+    title: "Loaded",
+    theme: "research",
+    view: { scale: 1, panX: 0, panY: 0 },
+    tiles: [],
+  }, { isCurrent: () => current });
+
+  current = false;
+  decoded.resolve([]);
+  assert.equal(await applying, false);
+  assert.equal(clearCalls, 0);
+  assert.equal(state.notebookApplying, false);
+});
+
+test("startup recovery offers explicit recover-as-copy and dismiss actions", () => {
+  const html = read("public/index.html");
+  const app = read("public/app.js");
+  const zh = read("public/locales/zh.js");
+
+  for (const id of ["notebookRecoverySection", "notebookRecoveryList"]) assert.match(html, new RegExp(`id="${id}"`));
+  for (const key of [
+    "recoveryTitle",
+    "recoveryDescription",
+    "recoverAsCopy",
+    "dismissRecovery",
+    "recoveryActionError",
+  ]) {
+    assert.match(app, new RegExp(`${key}:`));
+    assert.match(zh, new RegExp(`${key}:`));
+  }
+  assert.match(functionSource(app, "initializeNotebookSync"), /refreshPendingRecoveriesSafely\(\)/);
+  assert.match(functionSource(app, "renderPendingRecoveries"), /notebookController\.recoverAsCopy/);
+  assert.match(functionSource(app, "renderPendingRecoveries"), /notebookController\.dismissRecovery/);
 });
 
 test("sync controls are accessible, localized, and styled as toolbar state", () => {
