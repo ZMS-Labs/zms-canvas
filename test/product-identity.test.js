@@ -10,14 +10,16 @@ const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
 
 test("the modified distribution has a distinct ZMS Canvas identity", () => {
   const pkg = JSON.parse(read("package.json"));
+  const html = read("public/index.html");
+  const sourceLinks = [...html.matchAll(/<a\b[^>]*\bhref="([^"]+)"/g)].map(([, href]) => href);
   assert.equal(pkg.name, "@zms-labs/zms-canvas");
   assert.equal(pkg.bin["zms-canvas"], "cli.js");
   assert.equal(pkg.repository.url, "git+https://github.com/ZMS-Labs/zms-canvas.git");
   assert.match(read("NOTICE"), /based on PenEcho/i);
   assert.match(read("README.md"), /ZMS Canvas/);
   assert.doesNotMatch(read("README.md"), /penecho-readme-header\.png/i);
-  assert.match(read("public/index.html"), /ZMS Canvas/);
-  assert.ok(read("public/index.html").includes("https://github.com/ZMS-Labs/zms-canvas"));
+  assert.match(html, /ZMS Canvas/);
+  assert.ok(sourceLinks.some((href) => href === "https://github.com/ZMS-Labs/zms-canvas"));
   assert.match(read("public/locales/zh.js"), /title: "ZMS Canvas \| 手写 AI 画板"/);
   assert.match(read("public/locales/zh.js"), /debugTitle: "ZMS Canvas 调试"/);
   assert.match(read("Dockerfile"), /^FROM node:22-bookworm-slim@sha256:[a-f0-9]{64}$/m);
