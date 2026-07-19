@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { createNotebookController } = require("../public/notebooks.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
@@ -130,15 +131,21 @@ test("a failed synchronized drain aborts blank-canvas replacement without resett
   const app = read("public/app.js");
   let configureCalls = 0;
   let clearCalls = 0;
+  let cancelCalls = 0;
+  let invalidationCalls = 0;
+  let pendingCancelCalls = 0;
   const history = [{ keep: true }];
+  const future = [{ keep: true }];
+  const selection = { phase: "active", color: "#dc2626" };
   const state = {
     notebooksEnabled: true,
     currentNotebookTitle: "Active notebook",
-    selection: null,
+    selection,
     snapshotLoadGeneration: 3,
     userRevision: 7,
+    recognitionGeneration: 11,
     history,
-    future: [{ keep: true }],
+    future,
     historyBefore: { clear() { clearCalls++; } },
     inkBounds: { clear() { clearCalls++; } },
     currentSnapshotId: "device-copy",
@@ -160,19 +167,29 @@ test("a failed synchronized drain aborts blank-canvas replacement without resett
     state,
     document,
     tiles: { clear() { clearCalls++; } },
-    cancelSelection() {},
-    invalidateRecognition() {},
-    cancelPendingForRevision() {},
+    cancelSelection() { cancelCalls++; },
+    invalidateRecognition() { invalidationCalls++; state.recognitionGeneration++; },
+    cancelPendingForRevision() { pendingCancelCalls++; },
     closeHistoryPanel() {},
     fit() {},
     setStatusKey() {},
   });
 
-  await assert.rejects(startBlankCanvas(), /recovery write failed/);
+  const failure = await startBlankCanvas().then(() => null, (error) => error);
+  assert.match(failure?.message || "", /recovery write failed/);
+  assert.equal(failure?.notebookSyncFailure, true);
   assert.equal(configureCalls, 0);
   assert.equal(clearCalls, 0);
+  assert.equal(cancelCalls, 0);
+  assert.equal(invalidationCalls, 0);
+  assert.equal(pendingCancelCalls, 0);
+  assert.equal(state.snapshotLoadGeneration, 3);
+  assert.equal(state.userRevision, 7);
+  assert.equal(state.recognitionGeneration, 11);
+  assert.equal(state.selection, selection);
   assert.equal(state.currentNotebookTitle, "Active notebook");
   assert.equal(state.history, history);
+  assert.equal(state.future, future);
 });
 
 test("canvas source changes await exactly one successful detach before replacement", () => {
@@ -183,8 +200,173 @@ test("canvas source changes await exactly one successful detach before replaceme
   assert.equal((blank.match(/detachNotebookCanvas\(\)/g) || []).length, 1);
   assert.ok(load.indexOf("await detachNotebookCanvas()") < load.indexOf("tiles.clear()"));
   assert.ok(blank.indexOf("await detachNotebookCanvas()") < blank.indexOf("tiles.clear()"));
+  assert.ok(blank.indexOf("await detachNotebookCanvas()") < blank.indexOf("cancelSelection(true)"));
   assert.match(functionSource(app, "completeNewCanvas"), /await startBlankCanvas\(\)/);
   assert.match(app, /querySelector\("#newDiscard"\)\.onclick = \(\) => runSnapshotAction\(startBlankCanvas\)/);
+});
+
+test("blank transition drains a dirty recolored selection into the saved payload before clearing", async () => {
+  const app = read("public/app.js");
+  const events = [];
+  let capture;
+  let savedPayload;
+  let cancelCalls = 0;
+  const original = { blob: "original-pixels" };
+  const recolored = { blob: "recolored-pixels" };
+  const tiles = new Map();
+  const clear = tiles.clear.bind(tiles);
+  tiles.clear = () => { events.push("clear"); clear(); };
+  const state = {
+    selection: { phase: "active", fragments: [{ image: original, renderImage: recolored }] },
+    currentNotebookTitle: "Colored proof",
+    theme: "research",
+    scale: 1,
+    panX: 4,
+    panY: 8,
+    snapshotLoadGeneration: 1,
+    userRevision: 2,
+    history: [{ keep: true }],
+    future: [],
+    historyBefore: { clear() {} },
+    inkBounds: { clear() {} },
+    currentSnapshotId: null,
+    currentSnapshotName: "",
+    viewInitialized: true,
+  };
+  const document = {
+    querySelector(selector) {
+      if (selector === "#newCanvasDialog") return { open: false };
+      if (selector === "#newSnapshotName") return { value: "" };
+      if (selector === "#historyPanel") return { classList: { contains() { return false; } } };
+      throw Error(`Unexpected selector: ${selector}`);
+    },
+  };
+  const functions = loadScopedFunctions(app, ["mapWithConcurrency", "captureNotebookCanvas", "startBlankCanvas"], {
+    state,
+    tiles,
+    NOTEBOOK_TILE_CONCURRENCY: 4,
+    commitSelection() {
+      tiles.set("0,0", state.selection.fragments[0].renderImage);
+      state.selection = null;
+    },
+    cancelSelection() {
+      cancelCalls++;
+      tiles.set("0,0", original);
+      state.selection = null;
+    },
+    async detachNotebookCanvas() {
+      savedPayload = await capture();
+      events.push("saved");
+    },
+    snapshotPreview: () => ({ blob: "preview" }),
+    canvasBlob: async (canvas) => canvas.blob,
+    blobToBase64: async (blob) => blob,
+    t: () => "Untitled notebook",
+    document,
+    invalidateRecognition() {},
+    cancelPendingForRevision() {},
+    closeHistoryPanel() {},
+    fit() {},
+    setStatusKey() {},
+  });
+  capture = functions.captureNotebookCanvas;
+
+  await functions.startBlankCanvas();
+
+  assert.equal(cancelCalls, 0);
+  assert.equal(savedPayload.tiles[0].png, "recolored-pixels");
+  assert.ok(events.indexOf("saved") < events.indexOf("clear"));
+});
+
+test("snapshot actions distinguish synchronized drain failures from local history failures", async () => {
+  const app = read("public/app.js");
+  const syncErrors = [];
+  const localStatuses = [];
+  const { runSnapshotAction } = loadScopedFunctions(app, ["runSnapshotAction"], {
+    setNotebookOperationError(key, error) { syncErrors.push({ key, message: error.message }); },
+    setStatus(message) { localStatuses.push(message); },
+    t: () => "Local history: ",
+  });
+  const syncFailure = Error("offline");
+  syncFailure.notebookSyncFailure = true;
+
+  await runSnapshotAction(async () => { throw syncFailure; });
+  assert.deepEqual(syncErrors, [{ key: "notebookSyncError", message: "offline" }]);
+  assert.deepEqual(localStatuses, []);
+
+  await runSnapshotAction(async () => { throw Error("IndexedDB failed"); });
+  assert.deepEqual(localStatuses, ["Local history: IndexedDB failed"]);
+  assert.match(functionSource(app, "completeNewCanvas"), /notebookSyncFailure[\s\S]*setNotebookOperationError\("notebookSyncError", error\)/);
+});
+
+test("capturing a dirty recolored selection saves its pixels without scheduling an identical revision", async () => {
+  const app = read("public/app.js");
+  const apiCalls = [];
+  const tiles = new Map();
+  let controller;
+  const state = {
+    selection: {
+      phase: "active",
+      originalBox: { x: 0, y: 0, w: 1, h: 1 },
+      box: { x: 0, y: 0, w: 1, h: 1 },
+      fragments: [{ image: { blob: "original" }, renderImage: { blob: "recolored" } }],
+      color: "#dc2626",
+    },
+    selectionGesture: {},
+    userRevision: 4,
+    notebookApplying: false,
+    currentNotebookTitle: "One revision",
+    theme: "research",
+    scale: 1,
+    panX: 0,
+    panY: 0,
+  };
+  const bridge = { markConfirmedMutation() { controller.markConfirmedMutation(); } };
+  const functions = loadScopedFunctions(app, ["mapWithConcurrency", "markNotebookDirty", "commitSelection", "captureNotebookCanvas"], {
+    state,
+    tiles,
+    notebookController: bridge,
+    NOTEBOOK_TILE_CONCURRENCY: 4,
+    selectionHasChanges: () => true,
+    cancelSelection() { throw Error("changed selection must commit"); },
+    setStatusKey() {},
+    SELECT: { mapFragment: () => ({ x: 0, y: 0, w: 1, h: 1 }) },
+    blitSized(image) { tiles.set("0,0", { blob: image.blob }); },
+    save: () => true,
+    setCanvasCursor() {},
+    render() {},
+    snapshotPreview: () => ({ blob: "preview" }),
+    canvasBlob: async (canvas) => canvas.blob,
+    blobToBase64: async (blob) => blob,
+    t: () => "Untitled notebook",
+  });
+  const api = {
+    async create(payload) {
+      apiCalls.push({ method: "create", payload });
+      return { id: "notebook-1", revision: 1, ...payload };
+    },
+    async update(id, payload) {
+      apiCalls.push({ method: "update", id, payload });
+      return { id, revision: payload.baseRevision + 1, ...payload };
+    },
+  };
+  controller = createNotebookController({
+    api,
+    recovery: { async put() {}, async clear() {} },
+    capture: functions.captureNotebookCanvas,
+    apply: async () => {},
+    timers: { setTimeout: () => 1, clearTimeout() {} },
+    debounceMs: 2000,
+  });
+  controller.configure({ enabled: true });
+  controller.markConfirmedMutation();
+
+  await controller.flush();
+  await controller.flush();
+
+  assert.equal(apiCalls.length, 1);
+  assert.equal(apiCalls[0].payload.tiles[0].png, "recolored");
+  assert.equal(state.selection, null);
 });
 
 test("notebook read and action failures use their localized operation path, not save status", async () => {

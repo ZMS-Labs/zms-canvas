@@ -811,7 +811,15 @@
   }
   async function detachNotebookCanvas() {
     if (!notebookController || !state.notebooksEnabled) return;
-    await notebookController.flush();
+    try {
+      await notebookController.flush();
+    } catch (error) {
+      const failure = Error(error?.message || String(error || "Notebook synchronization failed"));
+      failure.name = error?.name || "Error";
+      failure.cause = error;
+      failure.notebookSyncFailure = true;
+      throw failure;
+    }
     notebookController.configure({ enabled: false });
     notebookController.configure({ enabled: true, current: null });
     state.currentNotebookTitle = "";
@@ -1019,7 +1027,7 @@
     });
   }
   async function captureNotebookCanvas() {
-    if (state.selection) commitSelection();
+    if (state.selection) commitSelection(false);
     return {
       title: state.currentNotebookTitle || t("untitledNotebook"),
       theme: state.theme,
@@ -1209,12 +1217,12 @@
   }
   async function startBlankCanvas() {
     const dialog = document.querySelector("#newCanvasDialog");
+    await detachNotebookCanvas();
     if (state.selection) cancelSelection(true);
     state.snapshotLoadGeneration++;
     state.userRevision++;
     invalidateRecognition();
     cancelPendingForRevision();
-    await detachNotebookCanvas();
     tiles.clear();
     state.inkBounds.clear();
     state.history = [];
@@ -1248,7 +1256,8 @@
       else if (saveMode === "overwrite") await saveSnapshot({ overwriteId: state.currentSnapshotId, name });
       await startBlankCanvas();
     } catch (error) {
-      setStatus(`${t("snapshotError")}${error.message}`);
+      if (error?.notebookSyncFailure) setNotebookOperationError("notebookSyncError", error);
+      else setStatus(`${t("snapshotError")}${error.message}`);
       setNewCanvasDialogBusy(false);
     }
   }
@@ -1458,7 +1467,8 @@
     try {
       await action();
     } catch (error) {
-      setStatus(`${t("snapshotError")}${error.message}`);
+      if (error?.notebookSyncFailure) setNotebookOperationError("notebookSyncError", error);
+      else setStatus(`${t("snapshotError")}${error.message}`);
     }
   }
   function initializeNotebookSync() {
@@ -1827,7 +1837,7 @@
     if (!silent) setStatusKey("selectionCancelled");
     return true;
   }
-  function commitSelection() {
+  function commitSelection(notifyNotebook = true) {
     const selection = state.selection;
     if (!selection) return false;
     if (selection.phase !== "active") {
@@ -1849,7 +1859,7 @@
     }
     state.userRevision++;
     save();
-    markNotebookDirty();
+    if (notifyNotebook) markNotebookDirty();
     setCanvasCursor("crosshair");
     render();
     setStatusKey("selectionCommitted");
