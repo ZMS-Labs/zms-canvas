@@ -3,4 +3,11 @@ node_modules
 .worktrees
 .superpowers
 test
+config.env
+*.env
+*.sqlite
+*.sqlite-*
+state
+notebooks
+notebooks.sqlite
 logs

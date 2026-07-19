@@ -126,6 +126,18 @@ zms-canvas configure
 zms-canvas
 ```
 
+### Run the published container
+
+The public image is published as `ghcr.io/zms-labs/zms-canvas` from this source repository. It runs as UID/GID `1000`, carries AGPL/source OCI labels, and keeps persistent notebook data outside the image. Mount a writable directory at `/state`; never copy configuration files, credentials, logs, SQLite files, or notebook data into an image build context.
+
+```bash
+docker run --rm -p 3888:3888 \
+  -v zms-canvas-state:/state \
+  ghcr.io/zms-labs/zms-canvas:sha-<commit>
+```
+
+The image sets `PENECHO_NOTEBOOKS_DB=/state/notebooks.sqlite`, but synchronized notebooks remain disabled unless deployment explicitly sets `PENECHO_NOTEBOOKS_ENABLED=true` and supplies its trusted identity header through the authenticated proxy.
+
 `npm link` creates the local command link; it does not publish the package. There is no separate build step and local development does not use `npm start`.
 
 Open [http://localhost:3888](http://localhost:3888). Other devices on the same trusted LAN can use `http://<this-computer-LAN-IP>:3888`.
