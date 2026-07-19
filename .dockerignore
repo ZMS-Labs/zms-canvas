@@ -1,0 +1,16 @@
+node_modules
+.git
+.worktrees
+.superpowers
+test
+config.env
+.env
+.env.cli
+.env.*
+*.env
+*.sqlite
+*.sqlite-*
+state
+notebooks
+notebooks.sqlite
+logs

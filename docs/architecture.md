@@ -85,7 +85,7 @@ The module computes one union bounding box across all primitives, smooth-curve e
 
 ## Local Snapshot Format
 
-The browser uses IndexedDB database `penecho-canvas-history` with two stores:
+The browser uses IndexedDB database `zms-canvas-history` with two stores:
 
 - `snapshots`: metadata, preview blob, theme, timestamp, and view transform
 - `snapshot-tiles`: one PNG blob per populated tile, indexed by snapshot ID
@@ -93,6 +93,14 @@ The browser uses IndexedDB database `penecho-canvas-history` with two stores:
 This keeps list rendering lightweight and avoids loading every full tile blob until a snapshot is selected. Snapshot loading invalidates active recognition state, discards unconfirmed drafts, clears undo/redo history, and reconstructs confirmed tiles.
 
 The current loaded or saved snapshot is tracked for the lifetime of the page so the New action can overwrite it safely. Saving as new creates a distinct snapshot, while every New path cancels active recognition, removes unconfirmed drafts, clears undo/redo state, and recenters the blank canvas.
+
+## Synchronized Notebook Continuity
+
+When `/api/config.js` advertises `notebooks.enabled`, `public/app.js` composes the controller in `public/notebooks.js` with the real same-origin HTTP adapter and a separate IndexedDB pending-save recovery store. The server remains authoritative: the history panel labels server notebooks, immutable revisions, and on-device snapshots as distinct sources, and copying a device snapshot creates a synchronized notebook without deleting the local record.
+
+Notebook capture serializes the selected theme, viewport, preview PNG, and every confirmed sparse tile as base64. An active dirty selection is committed into that payload while suppressing only the commit's redundant dirty notification, so its pixels are acknowledged by the current save without scheduling an identical follow-up revision. Encoding and decoding keep at most four tile jobs active and preserve manifest order. Loading or restoring first validates the manifest and retains every decoded tile in temporary canvases; only a fully decoded payload may invalidate recognition and replace the current confirmed tile map. Applying a loaded notebook suppresses autosave dirty marking and clears session-local undo/redo state.
+
+Autosave is scheduled only at confirmed mutation boundaries: completed pen or eraser history, accepted AI output, committed or recolored selections, undo, redo, and clear. Pan, zoom, draft movement, and selection preview movement remain session-only. Hiding or leaving the page requests a best-effort flush; replacing a synchronized canvas with a local snapshot or blank canvas drains first, before selection cancellation, generation changes, recognition invalidation, pending-AI cancellation, history reset, or tile clearing. Capture, recovery, or save failure aborts that destructive source reset; an active selection may already have been committed into the attempted save payload. Notebook read/action errors use the local message surface and do not overwrite the controller-owned save status; drain failures retain the controller save status and use notebook-sync error copy, while local-history copy is reserved for IndexedDB and snapshot operations. The controller preserves an unacknowledged complete payload in its recovery store until the server confirms the revision.
 
 ## Server
 

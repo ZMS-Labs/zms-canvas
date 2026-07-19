@@ -10,6 +10,8 @@ const { URL } = require("url");
 const { anthropicEffortParameters, anthropicResponseMaxTokens, normalizedApiEffort, resolveApiConfig } = require("./api-config.js");
 const { callCodexCli } = require("./codex-cli.js");
 const { callClaudeCli } = require("./claude-cli.js");
+const { createNotebookApi } = require("./notebook-api.js");
+const { createNotebookStore } = require("./notebook-store.js");
 let sharp = null;
 try { sharp = require("sharp"); } catch {}
 
@@ -24,7 +26,7 @@ const DEFAULT_MODEL_TIMEOUT_MS = 180000;
 const MODEL_FINAL_JSON_TARGET_TOKENS = 4096;
 const ANTHROPIC_MAX_EFFORT_THINKING_TARGET_TOKENS = 7000;
 const LOG_DIR = process.env.PENECHO_STATE_DIR ? path.resolve(process.env.PENECHO_STATE_DIR, "logs") : path.join(ROOT, "logs");
-const LOG_FILE = path.join(LOG_DIR, "penecho.log");
+const LOG_FILE = path.join(LOG_DIR, "zms-canvas.log");
 const REQUEST_TRACE_DIR = path.join(LOG_DIR, "requests");
 const MAX_LOG = 2 * 1024 * 1024;
 const CANVAS_SIZE = 20000;
@@ -68,7 +70,7 @@ const CLAUDE_CLI = {
 };
 const LOCAL_CLI = AI_PROVIDER === "codex-cli" ? { ...CODEX_CLI, label:"Codex CLI", doctor:"codex" } : AI_PROVIDER === "claude-cli" ? { ...CLAUDE_CLI, label:"Claude CLI", doctor:"claude" } : null;
 const AI_REQUEST_TIMEOUT_MS = MODEL_TIMEOUT_MS * 2 + 20000;
-const AI_SESSION_COOKIE_PREFIX = "penecho_ai_session";
+const AI_SESSION_COOKIE_PREFIX = "zms_canvas_ai_session";
 const AI_SESSION_TOKEN = crypto.randomBytes(32).toString("base64url");
 let activeLocalRequest = null;
 
@@ -125,7 +127,7 @@ function providerConfigurationError() {
   if (AI_PROVIDER === "api" && (!API || !MODEL)) return "Server must configure a valid AI_API_URL base URL and AI_API_MODEL. AI_API_FORMAT, when set, must be openai or anthropic.";
   if (AI_PROVIDER === "api" && !API_KEY) return "Server is missing AI_API_KEY.";
   if (!AI_IMAGE_FORMAT) return "PENECHO_AI_IMAGE_FORMAT must be webp or png when set.";
-  if (AI_IMAGE_FORMAT === "webp" && !sharp) return "WebP image encoding is unavailable. Reinstall PenEcho so its Sharp dependency is present, or select PNG in Settings.";
+  if (AI_IMAGE_FORMAT === "webp" && !sharp) return "WebP image encoding is unavailable. Reinstall ZMS Canvas so its Sharp dependency is present, or select PNG in Settings.";
   if (debugArtifactsValue === null) return "PENECHO_DEBUG_ARTIFACTS must be true or false when set.";
   if (requestTraceValue === null) return "PENECHO_REQUEST_TRACE must be true or false when set.";
   if (!requestTraceLimitValid) return "PENECHO_REQUEST_TRACE_LIMIT must be an integer between 1 and 1000.";
@@ -196,7 +198,16 @@ const THEME_PERSONAS = {
 
 function send(res, code, data, type = "application/json; charset=utf-8") { res.writeHead(code, { "Content-Type": type, "Cache-Control": "no-store" }); res.end(typeof data === "string" ? data : JSON.stringify(data)); }
 function readJson(req, limit = MAX_BODY) { return new Promise((resolve, reject) => { let size = 0, chunks = []; req.on("data", c => { size += c.length; if (size > limit) { reject(new Error("Request too large")); req.destroy(); } else chunks.push(c); }); req.on("end", () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { reject(new Error("Invalid JSON")); } }); req.on("error", reject); }); }
-function log(entry) { try { fs.mkdirSync(LOG_DIR, { recursive:true }); if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size >= MAX_LOG) { try { fs.renameSync(LOG_FILE, `${LOG_FILE}.1`); } catch { fs.truncateSync(LOG_FILE, 0); } } fs.appendFileSync(LOG_FILE, JSON.stringify({ time:new Date().toISOString(), ...entry }) + "\n"); } catch (error) { console.error("PenEcho log error:", error.message); } }
+function log(entry) {
+  let descriptor;
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive:true });
+    descriptor=fs.openSync(LOG_FILE,fs.constants.O_CREAT|fs.constants.O_APPEND|fs.constants.O_WRONLY,0o600);
+    if(fs.fstatSync(descriptor).size>=MAX_LOG)fs.ftruncateSync(descriptor, 0);
+    fs.writeFileSync(descriptor,JSON.stringify({time:new Date().toISOString(),...entry})+"\n");
+  } catch (error) { console.error("ZMS Canvas log error:", error.message); }
+  finally { if(descriptor!==undefined)try{fs.closeSync(descriptor);}catch{} }
+}
 function short(value, length = 20000) { return typeof value === "string" ? value.slice(0, length) : value; }
 function visibleCliDiagnostic(value) {
   return String(value || "").replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, " ").replace(/\s+/g, " ").trim().slice(0, 800);
@@ -280,7 +291,7 @@ async function prepareOutboundAtlas(atlasImage) {
   if(!source)throw new Error("Invalid atlas image data URL.");
   const configuredFormat=AI_IMAGE_FORMAT||"invalid",result={sourceImage:atlasImage,source,preferredImage:atlasImage,preferred:source,encoding:{requested:configuredFormat!=="png",configuredFormat,format:configuredFormat==="webp"?"webp-lossless":"png-original",status:configuredFormat==="png"?"source":"unavailable",lossless:true},fallbackUsed:false,fallback:null};
   if(configuredFormat==="png")return result;
-  if(!sharp)throw new Error("WebP image encoding is unavailable. Select PNG in Settings or reinstall PenEcho.");
+  if(!sharp)throw new Error("WebP image encoding is unavailable. Select PNG in Settings or reinstall ZMS Canvas.");
   try {
     const pipeline=sharp(source.buffer,{failOn:"error",limitInputPixels:2048*1536,sequentialRead:true}),buffer=await pipeline.webp({lossless:true,effort:6}).toBuffer(),mimeType="image/webp",base64=buffer.toString("base64"),preferredImage=`data:${mimeType};base64,${base64}`,preferred=imageDataUrlParts(preferredImage);
     if(!preferred)throw new Error("Image encoder returned invalid output.");
@@ -374,11 +385,11 @@ function hasAiSession(req) {
 }
 function browserRequestError(req, requireSession = true) {
   const host = requestHost(req), expectedOrigin = canonicalRequestOrigin(req), originText = typeof req.headers.origin === "string" ? req.headers.origin.trim() : "";
-  if (!expectedOrigin) return "AI requests require the configured PenEcho host.";
+  if (!expectedOrigin) return "AI requests require the configured ZMS Canvas host.";
   let origin;
-  try { origin = new URL(originText); } catch { return "AI requests require a same-origin PenEcho browser session."; }
+  try { origin = new URL(originText); } catch { return "AI requests require a same-origin ZMS Canvas browser session."; }
   const sameOrigin = isLoopbackHostname(host.hostname) ? isLoopbackHostname(origin.hostname) && hostMatchesOrigin(host, origin) : origin.origin === expectedOrigin.origin;
-  if (!sameOrigin || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash || requireSession && !hasAiSession(req)) return "AI requests require a same-origin PenEcho browser session.";
+  if (!sameOrigin || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash || requireSession && !hasAiSession(req)) return "AI requests require a same-origin ZMS Canvas browser session.";
   return null;
 }
 function aiSessionCookie(req) {
@@ -454,7 +465,7 @@ function modelRequestText(modelInput, retryInstruction="") {
   return retryInstruction ? `${JSON.stringify(modelInput)}\n\n${retryInstruction}` : JSON.stringify(modelInput);
 }
 function localCliSystemPrompt() {
-  return `${ACTIVE_SYSTEM_PROMPT}\n\nOperate only as an image-analysis model for PenEcho. Do not inspect files, run commands, or modify the temporary workspace. Analyze the attached canvas image and return only the requested JSON object as your final response.`;
+  return `${ACTIVE_SYSTEM_PROMPT}\n\nOperate only as an image-analysis model for ZMS Canvas. Do not inspect files, run commands, or modify the temporary workspace. Analyze the attached canvas image and return only the requested JSON object as your final response.`;
 }
 function localCliRequestPrompt(text) {
   return `Request metadata:\n${text}`;
@@ -691,12 +702,36 @@ function plotFallback(result,changedBox){
 }
 
 const MIME = { ".html":"text/html; charset=utf-8", ".js":"application/javascript; charset=utf-8", ".css":"text/css; charset=utf-8", ".svg":"image/svg+xml", ".png":"image/png" };
+const NOTEBOOKS_ENABLED = optionalBoolean(process.env.PENECHO_NOTEBOOKS_ENABLED) === true;
+const configuredNotebookDb = process.env.PENECHO_NOTEBOOKS_DB?.trim();
+const NOTEBOOKS_DB = configuredNotebookDb
+  ? path.resolve(configuredNotebookDb)
+  : path.resolve(process.env.PENECHO_STATE_DIR?.trim() || ROOT, "notebooks.sqlite");
+const NOTEBOOKS_OWNER_HEADER = process.env.PENECHO_NOTEBOOKS_OWNER_HEADER?.trim() || "x-authentik-uid";
+const NOTEBOOK_BODY_LIMIT = 64 * 1024 * 1024;
+let notebookStore = null;
+let notebookInitializationError = null;
+try {
+  if (NOTEBOOKS_ENABLED) notebookStore = createNotebookStore({ dbPath:NOTEBOOKS_DB });
+} catch (error) {
+  notebookInitializationError = error;
+}
+const notebookApi = createNotebookApi({
+  store:notebookStore,
+  enabled:NOTEBOOKS_ENABLED,
+  ownerHeader:NOTEBOOKS_OWNER_HEADER,
+  bodyLimit:NOTEBOOK_BODY_LIMIT,
+});
+function browserConfig() {
+  return { autoAiDelayMs:AUTO_AI_DELAY_MS, aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS, aiProvider:AI_PROVIDER || "invalid", aiEffort:configuredUiEffort(), notebooks:notebookApi.notebookConfig() };
+}
 const server = http.createServer(async (req, res) => {
   let url;
   try { url = new URL(req.url, "http://localhost"); } catch { return send(res, 400, "Bad Request", "text/plain; charset=utf-8"); }
-  if (LOCAL_CLI && !canonicalRequestOrigin(req)) return send(res, 421, { error:"Request Host does not match the configured PenEcho origin." });
-  if (req.method === "GET" && url.pathname === "/api/config") return send(res, 200, { autoAiDelayMs: AUTO_AI_DELAY_MS, aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS, aiProvider: AI_PROVIDER || "invalid", aiEffort:configuredUiEffort() });
-  if (req.method === "GET" && url.pathname === "/api/config.js") return send(res, 200, `window.PENECHO_CONFIG=${JSON.stringify({ autoAiDelayMs: AUTO_AI_DELAY_MS, aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS, aiProvider: AI_PROVIDER || "invalid", aiEffort:configuredUiEffort() })};`, "application/javascript; charset=utf-8");
+  if (LOCAL_CLI && !canonicalRequestOrigin(req)) return send(res, 421, { error:"Request Host does not match the configured ZMS Canvas origin." });
+  if (req.method === "GET" && url.pathname === "/api/config") return send(res, 200, browserConfig());
+  if (req.method === "GET" && url.pathname === "/api/config.js") return send(res, 200, `window.PENECHO_CONFIG=${JSON.stringify(browserConfig())};`, "application/javascript; charset=utf-8");
+  if (await notebookApi.handle(req, res, url)) return;
   if (req.method === "GET" && url.pathname === "/api/debug/log") {
     if (!DEBUG_ARTIFACTS || !isLoopback(req.socket.remoteAddress) || !isLoopbackHostname(requestHost(req)?.hostname)) return send(res, 404, "Not found", "text/plain; charset=utf-8");
     if (!fs.existsSync(LOG_FILE)) return send(res, 200, "No debug log yet.\n", "text/plain; charset=utf-8");
@@ -719,7 +754,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/debug/client") {
     if (!DEBUG_ARTIFACTS) return send(res, 204, "");
     if (!isLoopback(req.socket.remoteAddress) || !isLoopbackHostname(requestHost(req)?.hostname)) return send(res, 404, "Not found", "text/plain; charset=utf-8");
-    if (browserRequestError(req, false)) return send(res, 403, { error:"Debug events require the same PenEcho origin." });
+    if (browserRequestError(req, false)) return send(res, 403, { error:"Debug events require the same ZMS Canvas origin." });
     const eventId = crypto.randomUUID();
     try {
       if (!allowDebug(req.socket.remoteAddress)) throw new Error("Debug event rate limit exceeded");
@@ -820,7 +855,7 @@ const server = http.createServer(async (req, res) => {
         code = clientError ? 400 : timedOut ? 504 : upstreamStatus || 502;
       log({ type:"ai", requestId, ip, status:code, elapsedMs:Date.now()-started, error:clientError?"client-error":timedOut?"timeout":upstreamStatus?"upstream-error":"model-error" });
       const message = error.message || "Unable to process request.", diagnostic = LOCAL_CLI ? visibleCliDiagnostic(error.diagnostic) : "",
-        userMessage = LOCAL_CLI && !clientError ? `${message}${diagnostic ? ` ${diagnostic}` : ""} Run \`penecho doctor --${LOCAL_CLI.doctor}\` for diagnostics.` : message;
+        userMessage = LOCAL_CLI && !clientError ? `${message}${diagnostic ? ` ${diagnostic}` : ""} Run \`zms-canvas doctor --${LOCAL_CLI.doctor}\` for diagnostics.` : message;
       const responseBody={error:userMessage,requestId};
       completeRequestTrace(requestTrace,timedOut?"timeout":"failed",code,responseBody,error);
       send(res, code, responseBody);
@@ -846,12 +881,15 @@ const configuredPort = Number(process.env.PORT), PORT = Number.isInteger(configu
 const HOST = process.env.HOST || "0.0.0.0";
 const startupConfigurationError = LOCAL_CLI ? providerConfigurationError() : null;
 if (REQUEST_TRACE_ENABLED && requestTraceLimitValid) pruneRequestTraces();
-if (startupConfigurationError) {
-  console.error(`PenEcho configuration error: ${startupConfigurationError}`);
+if (notebookInitializationError) {
+  console.error(`ZMS Canvas notebook database initialization failed: ${notebookInitializationError.message}`);
+  process.exitCode = 1;
+} else if (startupConfigurationError) {
+  console.error(`ZMS Canvas configuration error: ${startupConfigurationError}`);
   log({ type:"server-start-error", provider:AI_PROVIDER, error:startupConfigurationError });
   process.exitCode = 1;
 } else server.listen(PORT, HOST, () => {
   const address = server.address(), listeningPort = typeof address === "object" && address ? address.port : PORT;
-  console.log(`PenEcho: http://${HOST}:${listeningPort} (${AI_PROVIDER || "invalid provider"})`);
+  console.log(`ZMS Canvas: http://${HOST}:${listeningPort} (${AI_PROVIDER || "invalid provider"})`);
   log({ type:"server-start", host:HOST, port:listeningPort, provider:AI_PROVIDER,requestTrace:REQUEST_TRACE_ENABLED?REQUEST_TRACE_LIMIT:0,aiImageFormat:AI_IMAGE_FORMAT,imageEncoder:AI_IMAGE_FORMAT!=="png"&&Boolean(sharp) });
 });

@@ -111,7 +111,7 @@ function startServer(env) {
     };
     child.stdout.on("data", chunk => {
       stdout += chunk.toString("utf8");
-      const match = stdout.match(/PenEcho: http:\/\/[^:]+:(\d+)/);
+      const match = stdout.match(/ZMS Canvas: http:\/\/[^:]+:(\d+)/);
       if (match) finish(null, { child, origin: `http://127.0.0.1:${match[1]}`, stateDir:env.PENECHO_STATE_DIR });
     });
     child.stderr.on("data", chunk => { stderr += chunk.toString("utf8"); });
@@ -154,6 +154,23 @@ async function stopServer(child) {
   await closed;
 }
 
+function expectServerStartupFailure(env) {
+  const child = spawn(process.execPath, [path.join(ROOT, "server.js")], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  return new Promise((resolve, reject) => {
+    let stdout = "", stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error(`Server did not fail startup.\n${stdout}\n${stderr}`));
+    }, 3000);
+    child.stdout.on("data", chunk => { stdout += chunk.toString("utf8"); });
+    child.stderr.on("data", chunk => { stderr += chunk.toString("utf8"); });
+    child.once("exit", code => {
+      clearTimeout(timeout);
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
 function validPayload() {
   const box = { x: 0, y: 0, w: 1, h: 1 };
   return {
@@ -175,23 +192,81 @@ function validPayload() {
 }
 
 test("server uses applied global configuration and one timeout for every executor", () => {
-  const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8"), packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8"), packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")), packageLock = JSON.parse(fs.readFileSync(path.join(ROOT, "package-lock.json"), "utf8"));
   assert.doesNotMatch(server, /loadEnv\(path\.join\(ROOT, ["']\.env["']\)\)/);
   assert.match(server, /process\.env\.AI_TIMEOUT_SECONDS/);
   assert.match(server, /MODEL_TIMEOUT_MS/);
   assert.doesNotMatch(packageJson.files.join("\n"), /^\.env(?:\.|$)/m);
   assert.equal(packageJson.scripts.start, undefined);
+  assert.equal(packageJson.engines.node, ">=22.13.0");
+  assert.equal(packageLock.packages[""].engines.node, ">=22.13.0");
+});
+
+test("omitted notebook configuration stays disabled without loading SQLite", { timeout:10000 }, async () => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"zms-canvas-no-sqlite-")),stateDir=path.join(directory,"state"),hook=path.join(directory,"deny-sqlite.cjs");
+  fs.writeFileSync(hook,`"use strict";const Module=require("node:module"),load=Module._load;Module._load=function(request,...args){if(request==="node:sqlite")throw new Error("node:sqlite must stay unloaded");return load.call(this,request,...args)};`);
+  const env=serverEnv({PENECHO_STATE_DIR:stateDir,NODE_OPTIONS:`--require=${hook}`});
+  delete env.PENECHO_NOTEBOOKS_ENABLED;
+  delete env.PENECHO_NOTEBOOKS_DB;
+  let running;
+  try {
+    running=await startServer(env);
+    const config=await fetch(`${running.origin}/api/config`).then(response=>response.json());
+    assert.deepEqual(config.notebooks,{enabled:false});
+    assert.equal(fs.existsSync(path.join(stateDir,"notebooks.sqlite")),false);
+  } finally { if(running)await stopServer(running.child); fs.rmSync(directory,{recursive:true,force:true}); }
 });
 
 test("Codex CLI mode starts with no extra access or model-provider settings", { timeout: 10000 }, async () => {
-  const {child,origin}=await startServer(serverEnv({HOST:"0.0.0.0"}));
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"zms-canvas-disabled-notebooks-")),dbPath=path.join(directory,"never-created","notebooks.sqlite"),{child,origin}=await startServer(serverEnv({HOST:"0.0.0.0",PENECHO_NOTEBOOKS_ENABLED:"false",PENECHO_NOTEBOOKS_DB:dbPath}));
   try {
     const localPage=await fetch(origin);
     assert.equal(localPage.status,200);
     assert.ok(localPage.headers.get("set-cookie"));
     const config=await fetch(`${origin}/api/config`).then(response=>response.json());
     assert.equal(config.aiEffort,"config");
-  } finally { await stopServer(child); }
+    assert.deepEqual(config.notebooks,{enabled:false});
+    const script=await fetch(`${origin}/api/config.js`).then(response=>response.text());
+    assert.match(script,/"notebooks":\{"enabled":false\}/);
+    assert.equal(fs.existsSync(dbPath),false);
+  } finally { await stopServer(child); fs.rmSync(directory,{recursive:true,force:true}); }
+});
+
+test("enabled notebooks initialize SQLite, enforce identity, and keep titles out of logs", { timeout:10000 }, async () => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"zms-canvas-enabled-notebooks-")),dbPath=path.join(directory,"db","notebooks.sqlite"),stateDir=path.join(directory,"state"),{child,origin}=await startServer(serverEnv({PENECHO_STATE_DIR:stateDir,PENECHO_NOTEBOOKS_ENABLED:"true",PENECHO_NOTEBOOKS_DB:dbPath,PENECHO_NOTEBOOKS_OWNER_HEADER:"x-authentik-uid"}));
+  try {
+    const config=await fetch(`${origin}/api/config`).then(response=>response.json());
+    assert.deepEqual(config.notebooks,{enabled:true});
+    assert.equal((await fetch(`${origin}/api/notebooks`)).status,401);
+    assert.equal((await fetch(`${origin}/api/notebooks`,{headers:{"x-authentik-uid":"owner-a"}})).status,200);
+    const png=Buffer.from("89504e470d0a1a0a00000000","hex").toString("base64"),secretTitle="PRIVATE NOTEBOOK TITLE";
+    const created=await fetch(`${origin}/api/notebooks`,{method:"POST",headers:{"content-type":"application/json","x-authentik-uid":"owner-a"},body:JSON.stringify({title:secretTitle,theme:"research",view:{scale:1,panX:0,panY:0},preview:png,tiles:[]})});
+    assert.equal(created.status,201);
+    assert.equal(fs.existsSync(dbPath),true);
+    const logPath=path.join(stateDir,"logs","zms-canvas.log");
+    assert.doesNotMatch(fs.readFileSync(logPath,"utf8"),new RegExp(secretTitle));
+  } finally { await stopServer(child); fs.rmSync(directory,{recursive:true,force:true}); }
+});
+
+test("enabled notebooks default the database beneath PENECHO_STATE_DIR", { timeout:10000 }, async () => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"zms-canvas-default-notebook-db-")),stateDir=path.join(directory,"state"),env=serverEnv({PENECHO_STATE_DIR:stateDir,PENECHO_NOTEBOOKS_ENABLED:"true"});
+  delete env.PENECHO_NOTEBOOKS_DB;
+  const running=await startServer(env);
+  try {
+    const config=await fetch(`${running.origin}/api/config`).then(response=>response.json());
+    assert.deepEqual(config.notebooks,{enabled:true});
+    assert.equal(fs.existsSync(path.join(stateDir,"notebooks.sqlite")),true);
+  } finally { await stopServer(running.child); fs.rmSync(directory,{recursive:true,force:true}); }
+});
+
+test("notebook database initialization failure prevents enabled startup", { timeout:10000 }, async () => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"zms-canvas-bad-notebook-db-"));
+  try {
+    const result=await expectServerStartupFailure(serverEnv({PENECHO_NOTEBOOKS_ENABLED:"true",PENECHO_NOTEBOOKS_DB:directory}));
+    assert.notEqual(result.code,0);
+    assert.match(result.stderr,/notebook database initialization failed/i);
+    assert.doesNotMatch(result.stdout,/ZMS Canvas: http:/);
+  } finally { fs.rmSync(directory,{recursive:true,force:true}); }
 });
 
 test("Claude CLI mode sends the canvas to the authenticated local CLI with the selected model and effort", { timeout:20000 }, async () => {

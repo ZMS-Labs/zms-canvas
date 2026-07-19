@@ -1,10 +1,16 @@
-PenEcho
-Copyright (C) 2026 PenEcho authors and contributors
+ZMS Canvas
+Copyright (C) 2026 ZMS Labs contributors
+
+ZMS Canvas is based on PenEcho, copyright (C) 2026 PenEcho authors and contributors.
+Material modifications and corresponding source for this distribution are available at
+https://github.com/ZMS-Labs/zms-canvas.
 
 Open-source license: GNU Affero General Public License v3.0 only
 SPDX-License-Identifier: AGPL-3.0-only
 
-The PenEcho name, wordmark, logo, pen-nib mark, and related brand assets are
-not granted for general use under the software license. See TRADEMARKS.md.
+The ZMS Canvas name is the identity of this modified distribution. The PenEcho
+name, wordmark, logo, pen-nib mark, and related brand assets remain the
+property of their respective owners and are not granted for general use under
+the software license. See TRADEMARKS.md.
 
 Alternative commercial licenses may be available. See COMMERCIAL-LICENSE.md.

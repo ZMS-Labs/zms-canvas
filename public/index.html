@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#100d18">
-  <title>PenEcho | Handwritten AI Canvas</title>
+  <title>ZMS Canvas | Handwritten AI Canvas</title>
   <link rel="stylesheet" href="style.css">
   <script src="mathjax-config.js"></script>
   <script
@@ -19,10 +19,10 @@
       <header class="top-row">
         <div class="brand">
           <div class="sigil" aria-hidden="true">
-            <img src="penecho-mark.png" alt="">
+            <span>Z</span>
           </div>
           <div class="brand-copy">
-            <h1><span>Pen</span><strong>Echo</strong></h1>
+            <h1><span>ZMS</span><strong>Canvas</strong></h1>
             <p data-i18n="tagline">Write across twenty thousand squares and summon knowledge</p>
           </div>
         </div>
@@ -130,6 +130,10 @@
           <button data-action="redo" class="icon-button" data-i18n-aria="redo" aria-label="Redo" data-i18n-title="redo" title="Redo">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5"/><path d="M20 12h-9a6 6 0 0 0-6 6"/></svg>
           </button>
+          <div id="notebookSyncStatus" class="notebook-sync-status" role="status" aria-live="polite" aria-atomic="true" data-state="saved" hidden>
+            <span class="notebook-sync-signal" aria-hidden="true"></span>
+            <span data-notebook-sync-copy>Saved</span>
+          </div>
           <button id="fullscreenBtn" class="icon-button" type="button" data-i18n-aria="fullscreen" aria-label="Fullscreen" data-i18n-title="fullscreen" title="Fullscreen" aria-pressed="false">
             <svg class="fullscreen-enter" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
             <svg class="fullscreen-exit" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8H3V3M16 8h5V3M8 16H3v5M16 16h5v5"/></svg>
@@ -156,22 +160,40 @@
     <div id="historyBackdrop" class="history-backdrop" hidden></div>
     <aside id="historyPanel" class="history-panel" aria-hidden="true" aria-labelledby="historyTitle">
       <header>
-        <div><span class="history-kicker">PenEcho</span><h2 id="historyTitle" data-i18n="historyTitle">Local canvas history</h2></div>
+        <div><span class="history-kicker">ZMS Canvas</span><h2 id="historyTitle" data-i18n="historyTitle">Local canvas history</h2></div>
         <button id="historyClose" type="button" data-i18n-aria="closeHistory" aria-label="Close history" data-i18n-title="closeHistory" title="Close history">×</button>
       </header>
-      <p data-i18n="historyDescription">Stores confirmed canvas content only. Unconfirmed AI drafts are excluded.</p>
-      <div class="history-save-row">
-        <input id="historyName" type="text" maxlength="48" data-i18n-placeholder="snapshotName" placeholder="Snapshot name (optional)" data-i18n-aria="snapshotName" aria-label="Snapshot name">
-        <button id="historySave" type="button" data-i18n="saveSnapshot">Save canvas</button>
-        <button id="historyNew" type="button" data-i18n="newCanvas">New</button>
-      </div>
-      <div id="historyList" class="history-list" aria-live="polite"></div>
+      <p id="historyDescription" data-i18n="historyDescription">Stores confirmed canvas content only. Unconfirmed AI drafts are excluded.</p>
+      <section id="syncedNotebookSection" class="history-source synced-source" aria-labelledby="syncedNotebooksTitle" hidden>
+        <header class="history-source-heading">
+          <div><span class="history-source-label" data-i18n="serverSource">Server</span><h3 id="syncedNotebooksTitle" data-i18n="syncedNotebooksTitle">Synced notebooks</h3></div>
+        </header>
+        <p data-i18n="syncedNotebooksDescription">Saved revisions are available on your connected devices.</p>
+        <section id="notebookRecoverySection" class="notebook-recovery" aria-labelledby="notebookRecoveryTitle" hidden>
+          <h4 id="notebookRecoveryTitle" data-i18n="recoveryTitle">Unsaved recovery copies</h4>
+          <p data-i18n="recoveryDescription">These complete device copies were not acknowledged by the server. Recover or dismiss each one.</p>
+          <div id="notebookRecoveryList" class="history-list" aria-live="polite"></div>
+        </section>
+        <div id="syncedNotebooks" class="history-list synced-notebook-list" aria-live="polite"></div>
+      </section>
+      <section id="deviceSnapshots" class="history-source device-source" aria-labelledby="deviceSnapshotsTitle">
+        <header class="history-source-heading">
+          <div><span class="history-source-label" data-i18n="deviceSource">Device</span><h3 id="deviceSnapshotsTitle" data-i18n="deviceSnapshotsTitle">On this device</h3></div>
+        </header>
+        <p data-i18n="deviceSnapshotsDescription">Local snapshots stay on this device until you copy or delete them.</p>
+        <div class="history-save-row">
+          <input id="historyName" type="text" maxlength="48" data-i18n-placeholder="snapshotName" placeholder="Snapshot name (optional)" data-i18n-aria="snapshotName" aria-label="Snapshot name">
+          <button id="historySave" type="button" data-i18n="saveSnapshot">Save canvas</button>
+          <button id="historyNew" type="button" data-i18n="newCanvas">New</button>
+        </div>
+        <div id="historyList" class="history-list" aria-live="polite"></div>
+      </section>
     </aside>
 
     <dialog id="newCanvasDialog" class="new-canvas-dialog" aria-labelledby="newCanvasTitle">
       <form method="dialog">
         <header>
-          <div><span class="history-kicker">PenEcho</span><h2 id="newCanvasTitle" data-i18n="newCanvasTitle">Start a new canvas?</h2></div>
+          <div><span class="history-kicker">ZMS Canvas</span><h2 id="newCanvasTitle" data-i18n="newCanvasTitle">Start a new canvas?</h2></div>
           <button id="newCanvasClose" class="new-canvas-close" type="button" data-i18n-aria="cancel" aria-label="Cancel" data-i18n-title="cancel" title="Cancel">×</button>
         </header>
         <p data-i18n="newCanvasDescription">Save confirmed content before starting over. Unconfirmed AI drafts are not included.</p>
@@ -217,19 +239,21 @@
     </section>
 
     <section id="debugPanel" hidden>
-      <div><strong data-i18n="debugTitle">PenEcho debug</strong><span id="debugRequest">request: -</span></div>
+      <div><strong data-i18n="debugTitle">ZMS Canvas debug</strong><span id="debugRequest">request: -</span></div>
       <ol id="debugEvents"></ol>
     </section>
 
     <footer>
       <span id="coords">x 10000 · y 10000 · 100%</span>
       <span data-i18n="footerTip">AI drafts: move the whole group or adjust, accept, and discard items independently</span>
+      <a href="https://github.com/ZMS-Labs/zms-canvas">ZMS Canvas source</a>
     </footer>
   </main>
   <script src="/api/config.js"></script>
   <script src="locales/zh.js"></script>
   <script src="draw.js"></script>
   <script src="selection.js"></script>
+  <script src="notebooks.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
