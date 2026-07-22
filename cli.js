@@ -86,10 +86,11 @@ function parseArgs(argv = []) {
 
 function parseEnvText(text) {
   const values = {};
-  for (const line of String(text || "").split(/\r?\n/)) {
-    const match = line.match(/^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/i);
+  for (const rawLine of String(text || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const match = line.match(/^(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/i);
     if (!match) continue;
-    let value = match[2];
+    let value = match[2].trimEnd();
     if (value.startsWith('"') && value.endsWith('"')) {
       try { value = JSON.parse(value); } catch { value = value.slice(1, -1); }
     } else if (value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1);

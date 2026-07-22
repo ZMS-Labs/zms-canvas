@@ -292,6 +292,36 @@ function decodeAtlasImage(dataUrl) {
   return { buffer:Buffer.from(match[2], "base64"), extension:format, mimeType:`image/${format}` };
 }
 
+// Reads the captured output via a single open file handle so the size/type check and the
+// read happen against the same file descriptor, closing the stat-then-read TOCTOU window.
+async function readCapturedOutput(outputFile, { signal, requireFinal = true } = {}) {
+  let handle;
+  try {
+    handle = await fs.promises.open(outputFile, "r");
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      if (requireFinal) throw new Error("Codex CLI did not produce a final response.");
+      return null;
+    }
+    throw error;
+  }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size <= 0) {
+      if (requireFinal) throw new Error("Codex CLI did not produce a final response.");
+      return null;
+    }
+    if (stat.size > MAX_CAPTURE_BYTES) {
+      if (requireFinal) throw new Error("Codex CLI final response is too large.");
+      return null;
+    }
+    const buffer = await handle.readFile(signal ? { signal } : undefined);
+    return buffer.toString("utf8");
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
 async function callCodexCli({ executable, model, effort, prompt, atlasImage, signal, env = process.env }) {
   const workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "penecho-codex-"));
   const image = decodeAtlasImage(atlasImage), imageFile = path.join(workDir, `atlas.${image.extension}`), outputFile = path.join(workDir, "last-message.txt");
@@ -313,22 +343,16 @@ async function callCodexCli({ executable, model, effort, prompt, atlasImage, sig
       error.traceDiagnostic = result.traceDiagnostic;
       throw error;
     }
-    const stat = await fs.promises.stat(outputFile).catch(() => null);
     if (signal?.aborted) throw abortError();
-    if (!stat || !stat.isFile() || stat.size <= 0) throw new Error("Codex CLI did not produce a final response.");
-    if (stat.size > MAX_CAPTURE_BYTES) throw new Error("Codex CLI final response is too large.");
-    const content = await fs.promises.readFile(outputFile, { encoding:"utf8", signal });
+    const content = await readCapturedOutput(outputFile, { signal });
     if (signal?.aborted) throw abortError();
     return content;
   } catch (error) {
     caughtError = error;
     cleanupReady = error.cleanupReady || cleanupReady;
     deferCleanup = deferCleanup || Boolean(error.deferCleanup);
-    const stat = await fs.promises.stat(outputFile).catch(() => null);
-    if (stat?.isFile() && stat.size > 0 && stat.size <= MAX_CAPTURE_BYTES) {
-      const lastMessage = await fs.promises.readFile(outputFile, "utf8").catch(() => "");
-      if (lastMessage) error.traceDiagnostic = `${error.traceDiagnostic || ""}\nlast-message.txt:\n${lastMessage}`.trim();
-    }
+    const lastMessage = await readCapturedOutput(outputFile, { requireFinal: false }).catch(() => null);
+    if (lastMessage) error.traceDiagnostic = `${error.traceDiagnostic || ""}\nlast-message.txt:\n${lastMessage}`.trim();
     throw error;
   } finally {
     const cleanup = async () => {
