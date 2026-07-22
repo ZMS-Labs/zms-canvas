@@ -87,14 +87,16 @@ function parseArgs(argv = []) {
 function parseEnvText(text) {
   const values = {};
   for (const rawLine of String(text || "").split(/\r?\n/)) {
-    const line = rawLine.trim();
-    const match = line.match(/^(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/i);
-    if (!match) continue;
-    let value = match[2].trimEnd();
+    const line = rawLine.trim().replace(/^export\s+/i, "");
+    const separatorIndex = line.indexOf("=");
+    if (separatorIndex === -1) continue;
+    const key = line.slice(0, separatorIndex).trimEnd();
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(key)) continue;
+    let value = line.slice(separatorIndex + 1).trim();
     if (value.startsWith('"') && value.endsWith('"')) {
       try { value = JSON.parse(value); } catch { value = value.slice(1, -1); }
     } else if (value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1);
-    values[match[1]] = value;
+    values[key] = value;
   }
   return values;
 }
