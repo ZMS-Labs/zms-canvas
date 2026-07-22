@@ -448,7 +448,7 @@ function saveLatestModelExchange(requestId, attempt, modelInput, retryInstructio
       requestId,
       attempt,
       request:{ metadata:modelInput, retryInstruction:retryInstruction || null },
-      response:{ provider:model.provider, model:model.model, status:model.status, upstream:model.upstream || null, rawContent:model.content, parsed:model.result },
+      response:{ provider:model.provider, model:model.model, status:model.status, upstream:model.upstream || null, rawContent:short(model.content, 65536), parsed:model.result },
     }, null, 2);
   } catch {
     log({type:"debug-model-error",error:"serialize-failed"});
