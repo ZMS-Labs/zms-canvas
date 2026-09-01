@@ -1,8 +1,9 @@
 <!-- ZMS-ESTATE:BEGIN -->
 
-> **Estate status:** `maintenance` · **Purpose:** `product` · **Portfolio role:** `none`
+> **Obligation:** `best effort` · **Stage:** `building` · **Load-bearing:** `unknown — not yet observed`
+> **Purpose:** `creative_play` · `product`
 > **Canonical for:** spatial-ai-canvas
-> Lifecycle authority: `ZMS-Labs/zms-homelab/governance/estate.yaml`.
+> Estate authority: `ZMS-Labs/zms-homelab/governance/estate.yaml`.
 
 <!-- ZMS-ESTATE:END -->
 
