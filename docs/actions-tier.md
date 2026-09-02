@@ -1,7 +1,15 @@
 # GitHub Actions tier
 
-**Tier: C** — in-repo gate (shared template does not apply)
-**Review date: 2026-12-01**
+**Tier: C** — in-repo checks (shared template does not apply)
+**Reviewed: 2026-09-02** · **Next review due: 2026-12-01**
+
+2026-12-01 is when this posture must be re-checked, not a date on which
+anything was verified. Everything below was established on 2026-09-02.
+
+**These checks are advisory, not a merge gate.** Neither the ruleset nor classic
+branch protection requires any status-check context on the default branch, so a
+pull request can be merged while the jobs below are failing or have not run at
+all. They are worth reading before merging; nothing enforces that anyone did.
 
 ## Why the shared template does not apply
 

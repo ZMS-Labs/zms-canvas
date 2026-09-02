@@ -4,13 +4,21 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # `converted_to_draft` is here so that sending a ready PR back to draft
+    # actually stops its running jobs. Without it no event fires, the concurrency
+    # rule below never gets a chance to supersede, and the old run keeps burning
+    # runner time up to its timeout. The new run skips every job and cancels the
+    # old one.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
-# Cancellation is scoped to pull requests only. The `image-publish` job below
-# runs on push to main and pushes a real image to GHCR; cancelling it midway is
-# not a saved minute, it is a half-published release.
+# Pull requests group by ref and supersede each other. Pushes to main group by
+# COMMIT, so each one is alone in its group. Both halves matter: a shared group
+# would let a third push to main evict the second while it is still queued --
+# GitHub replaces a pending run even when cancel-in-progress is false -- and that
+# commit's `sha-<commit>` image would never be published, while README.md tells
+# deployments to pin exactly those tags.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
