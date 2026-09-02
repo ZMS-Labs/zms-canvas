@@ -1,0 +1,30 @@
+# Tier C gate -- caller of the per-class template projected from zms-homelab.
+# Policy (ready-PR-only, concurrency, timeout, pins) lives in the template; this
+# file only names the commands. See docs/actions-tier.md and
+# ZMS-Labs/zms-homelab docs/actions/tier-c-templates.md. Review date: 2026-12-01.
+name: gate
+
+on:
+  pull_request:
+    # ready_for_review is load-bearing: the template's job skips drafts, and
+    # marking a PR ready emits ONLY this event. Without it a ready PR would be
+    # mergeable with zero checks. No branches: filter (stacked PRs must gate).
+    # converted_to_draft is here so the caller's concurrency group below
+    # cancels an in-flight gate the moment the PR goes back to draft.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tier-c:
+    uses: ZMS-Labs/zms-homelab/.github/workflows/tier-c-gate-node.yml@965ac8d43196924f51d7fcee389a1e63e79f614f # main @ 2026-09-01
+    with:
+      node-version: '22.13.0'
+      install-command: npm ci
+      test-command: npm run check
