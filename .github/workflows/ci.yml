@@ -4,13 +4,31 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `converted_to_draft` is here so that sending a ready PR back to draft
+    # actually stops its running jobs. Without it no event fires, the concurrency
+    # rule below never gets a chance to supersede, and the old run keeps burning
+    # runner time up to its timeout. The new run skips every job and cancels the
+    # old one.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+# Pull requests group by ref and supersede each other. Pushes to main group by
+# COMMIT, so each one is alone in its group. Both halves matter: a shared group
+# would let a third push to main evict the second while it is still queued --
+# GitHub replaces a pending run even when cancel-in-progress is false -- and that
+# commit's `sha-<commit>` image would never be published, while README.md tells
+# deployments to pin exactly those tags.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   check:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -32,8 +50,9 @@ jobs:
         run: npm run check
 
   dependency-review:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
 
@@ -45,9 +64,10 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5
 
   image-build:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     needs: [check]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
 
@@ -72,6 +92,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [check]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
