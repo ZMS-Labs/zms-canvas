@@ -35,11 +35,18 @@ the Tier C *shape* is implemented directly in this repo's own workflow instead.
 - **Draft-gated.** Every job carries a job-level `draft == false` condition, and
   the `pull_request` trigger lists `ready_for_review` so marking a draft ready
   starts the gate. Work in progress costs no runner minutes.
-- **Cancellation.** Workflow-level `concurrency` groups on `github.ref` and
-  cancels superseded runs — but `cancel-in-progress` is the expression
-  `github.event_name == 'pull_request'`, so a push-to-`main` run is never
-  cancelled. `image-publish` pushes a real image to GHCR; interrupting it is not
-  a saved minute, it is a half-published release.
+- **Cancellation.** Pull-request runs group on `github.ref` and supersede each
+  other. Pushes to `main` group on the **commit**, so each is alone in its group.
+  Both halves matter. `image-publish` pushes a real image to GHCR, and
+  `cancel-in-progress: false` would not have been enough on its own: it protects
+  a *running* member of a group but not a pending one, so a third push to `main`
+  would have evicted the second while it was still queued and that commit's
+  `sha-<commit>` image would never have been published — while `README.md` tells
+  deployments to pin exactly those tags.
+- **Draft round-trips are covered.** `converted_to_draft` is in the
+  `pull_request` types. Without it, sending a ready PR back to draft fires no
+  event, so nothing enters the concurrency group to supersede the running jobs
+  and they bill on to their timeouts.
 - **Bounded.** Every job declares `timeout-minutes`.
 
 ## Required contexts
