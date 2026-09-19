@@ -47,3 +47,20 @@ By opening a pull request and confirming the contributor-agreement checkbox, you
 ## Pull Requests
 
 Describe the user-visible behavior, implementation approach, validation performed, and any known limitations. Avoid committing configuration files containing credentials, logs, browser test output, local agent state, or generated dependency directories.
+
+## Visual documentation quality
+
+Apply the [shared visual documentation standard](https://github.com/ZMS-Labs/.github/blob/main/docs/documentation-standard.md#use-visuals-to-explain)
+to all new or changed visual headings, Mermaid diagrams, flowcharts, sequences,
+screenshots, and charts. Verify labels, arrows, grouping, order, and status
+against authoritative source; distinguish conceptual, planned, implemented, and
+observed evidence. Preserve authentic product screenshots and product-local
+design identity. Use generated images only for illustrative explanation, and
+keep exact diagrams editable.
+
+Inspect the rendered destination at desktop and narrow widths, with readable
+labels, a text equivalent, and light/dark presentation where supported. Record
+the source scope, actual semantic and render checks, and remaining limits in the
+change description. Use one bounded review and recheck affected content; this
+standard adds no mandatory independent-model gate. Adoption does not certify
+that historical visuals have been reviewed.
