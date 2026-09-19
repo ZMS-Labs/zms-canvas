@@ -14,7 +14,7 @@
 <p align="center">ZMS Canvas is a shared canvas where handwriting, equations, diagrams, and spatial context become part of the conversation.</p>
 
 <p align="center">
-  <a href="https://discord.gg/3jrPJ3mXdX">
+  <a href="https://github.com/ZMS-Labs/zms-canvas">
     <img src="https://img.shields.io/badge/GitHub-ZMS%20Canvas-181717?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="ZMS Canvas on GitHub">
   </a>
   <a href="https://github.com/ZMS-Labs/zms-canvas/stargazers">
@@ -22,7 +22,9 @@
   </a>
 </p>
 
-<p align="center"><em>Built in the open by a small community — <a href="https://discord.gg/3jrPJ3mXdX">come help shape it</a>.</em></p>
+<p align="center"><em>A ZMS Labs fork of <a href="https://github.com/penecho/penecho">PenEcho</a>, with upstream attribution and licensing retained.</em></p>
+
+Start with the [repository guide](docs/README.md) for scope, source setup, verification, and the relationship to upstream. The manifest identifies this fork as version `0.1.0`; inherited feature descriptions are not a separate ZMS release announcement.
 
 ## Think on the canvas
 
@@ -38,7 +40,7 @@ Put a question, equation, diagram, or half-formed idea anywhere on the canvas an
 
 ZMS Canvas keeps a small local runtime and only allocates `512 x 512` tiles where ink exists, so the huge logical canvas does not become a huge bitmap.
 
-## What's new in 0.4.2
+## Inherited canvas capabilities
 
 - **Per-request reasoning control.** The canvas toolbar now provides six convenient levels for matching response quality and speed to the task: `Configured` keeps the saved model or CLI setting, `None` disables reasoning where the provider supports it, `Low` is the fastest lightweight option, `Medium` is the balanced everyday choice, `High` adds more depth for difficult work, and `Max` requests the provider's highest practical level (`xhigh` for OpenAI and `max` for Anthropic). The choice applies to the next requests without reopening the configuration center.
 - **High-resolution PNG export.** Use `Export` in the toolbar to download the confirmed canvas as a crisp PNG. ZMS Canvas crops to the smallest rectangle containing the ink and adds one paper tile of margin on every side, making the result easy to share or archive without exporting the entire sparse canvas.
@@ -64,15 +66,19 @@ The browser sends only the relevant canvas crop and geometry. The server validat
 
 ## Quick start
 
-You need [Node.js 22.5+](https://nodejs.org/) and one of the following: an API key, an authenticated [Codex CLI](https://developers.openai.com/codex/cli), or an authenticated [Claude Code CLI](https://code.claude.com/docs/en/overview).
+You need [Node.js 22.13+](https://nodejs.org/) and one of the following: an API key, an authenticated [Codex CLI](https://developers.openai.com/codex/cli), or an authenticated [Claude Code CLI](https://code.claude.com/docs/en/overview).
 
 ```bash
-npm install -g @zms-labs/zms-canvas
-zms-canvas configure
-zms-canvas
+git clone https://github.com/ZMS-Labs/zms-canvas.git
+cd zms-canvas
+npm ci
+node cli.js configure
+node cli.js
 ```
 
-`zms-canvas configure` opens the interactive configuration center. Its main menu contains `LLM source`, `Settings`, and `Exit`. Use the arrow keys and Enter to navigate:
+This quick start runs the checked-out source; it does not assume the fork has a published npm package. After `npm link`, the same commands are available as `zms-canvas`.
+
+`node cli.js configure` opens the interactive configuration center. Its main menu contains `LLM source`, `Settings`, and `Exit`. Use the arrow keys and Enter to navigate:
 
 - `LLM source -> Claude CLI` selects a detected, recommended, default, or manually entered model and an effort level. Opus 4.8 or newer is recommended; Sonnet and Opus 4.6 can respond but may produce weaker canvas results.
 - `LLM source -> Codex CLI` selects a model and effort. GPT-5.5 or newer is required for good results, `gpt-5.6-sol` is recommended, and `xhigh` is the highest listed Codex effort.

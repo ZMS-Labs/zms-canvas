@@ -1,21 +1,21 @@
-# Contributing to PenEcho
+# Contributing to ZMS Canvas
 
-Thank you for improving PenEcho.
+ZMS Canvas is a fork of [PenEcho](https://github.com/penecho/penecho). Use this repository for changes to the fork and the upstream project for changes intended for PenEcho. Read the [repository guide](docs/README.md) first. Upstream contribution terms are retained below; check the linked agreement and destination project before submitting changes.
 
 ## Development Setup
 
-1. Install Node.js 18 or newer.
+1. Install Node.js 22.13 or newer, as required by `package.json`.
 2. Install dependencies and link this checkout's command:
 
    ```bash
-   npm install
+   npm ci
    npm link
    ```
 
-3. Run `penecho configure` and choose API, Codex CLI, or Claude CLI. Codex and Claude modes require their installed CLI to be authenticated first.
-4. Run `penecho` and open `http://localhost:3888`, or use this computer's LAN IP from another device on the same trusted network.
+3. Run `zms-canvas configure` and choose API, Codex CLI, or Claude CLI. Codex and Claude modes require their installed CLI to be authenticated first.
+4. Run `zms-canvas` and open `http://localhost:3888`, or use this computer's LAN IP from another device on the same trusted network.
 
-The default development configuration is the same global `~/.penecho/config.env` used by the installed package. For an isolated test setup, use `penecho configure --config ./local.env` and `penecho --config ./local.env`. Project `.env` files are not loaded automatically.
+The default development configuration is the same global `~/.zms-canvas/config.env` used by the installed package. For an isolated test setup, use `zms-canvas configure --config ./local.env` and `zms-canvas --config ./local.env`. Project `.env` files are not loaded automatically.
 
 ## Before Submitting Changes
 
@@ -36,7 +36,7 @@ For browser-facing changes, verify desktop and mobile layouts and test stylus/mo
 - Use dependencies only when their licenses explicitly permit commercial use.
 - Keep changes focused and document new data formats or external services.
 
-## Contribution Licensing
+## Upstream contribution licensing
 
 PenEcho is offered under `AGPL-3.0-only` and may also be offered under separate commercial terms. To keep both paths possible, every copyrightable contribution is subject to the [PenEcho Contributor License Agreement](CONTRIBUTOR-LICENSE-AGREEMENT.md).
 
