@@ -1,6 +1,6 @@
 # ZMS Canvas repository guide
 
-ZMS Canvas is a ZMS Labs fork of [PenEcho](https://github.com/penecho/penecho), a browser canvas that combines ink and spatial context with AI-assisted responses. The fork includes notebook storage and source-level adaptations described by its implementation. Upstream authorship, notices, and license files remain part of the repository.
+ZMS Canvas is a ZMS Labs fork of [PenEcho](https://github.com/penecho/penecho), a browser canvas that combines ink and spatial context with AI-assisted responses. The fork includes notebook storage and source-level adaptations described by its implementation; the fork also carries security hardening (ReDoS/TOCTOU/file-access fixes), CI bring-up and container publication, beyond the notebook layer. Upstream authorship, notices, and license files remain part of the repository.
 
 ## Current scope
 
