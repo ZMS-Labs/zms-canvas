@@ -1,6 +1,6 @@
 <!-- ZMS-ESTATE:BEGIN -->
 
-Status: In development.
+Status: Paused.
 
 <!-- ZMS-ESTATE:END -->
 
