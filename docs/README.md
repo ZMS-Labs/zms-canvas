@@ -1,12 +1,12 @@
 # ZMS Canvas repository guide
 
-ZMS Canvas is a ZMS Labs fork of [PenEcho](https://github.com/penecho/penecho), a browser canvas that combines ink and spatial context with AI-assisted responses. The fork includes notebook storage and source-level adaptations described by its implementation; the fork also carries security hardening (ReDoS/TOCTOU/file-access fixes), CI bring-up and container publication, beyond the notebook layer. Upstream authorship, notices, and license files remain part of the repository.
+ZMS Canvas is my fork of [PenEcho](https://github.com/penecho/penecho), a browser canvas where you write or sketch a problem and an AI model answers beside your marks. The fork adds synchronized notebooks that keep pending edits until the server confirms a save, and keep a separate copy when two versions conflict. It also has security fixes for three problems (a text pattern that crafted input could slow down badly, file checks that could race with changes to the file, and an optional debug file that an unusually large model response could fill, which is now capped), plus its own CI and a container build. PenEcho's authorship, notices and license files remain part of the repository.
 
 ## Current scope
 
-The package manifest names `@zms-labs/zms-canvas`, declares version `0.1.0`, and requires Node.js `>=22.13.0`. Those are source facts, not evidence of a published npm package or a running deployment. Start from this checkout using the [README quick start](../README.md#quick-start).
+The package is named `@zms-labs/zms-canvas` and needs Node.js 22.13 or newer. It is not published to npm, so start from this checkout using the [README quick start](../README.md#quick-start).
 
-AI requests use the configured executor and credentials. Configuration and saved content can be sensitive; use synthetic content when reproducing a problem and keep local configuration out of commits.
+AI requests use the configured executor and credentials. Configuration and saved content can be sensitive; use made-up content when reproducing a problem and keep local configuration out of commits.
 
 ## Reading paths
 
@@ -22,6 +22,6 @@ AI requests use the configured executor and credentials. Configuration and saved
 
 ## Verify a change
 
-With dependencies installed, `npm run check` performs JavaScript syntax checks and the repository's Node test suite. This is source verification; it does not prove a configured AI service, account, or deployment is healthy. For UI changes, exercise the affected interaction with appropriate synthetic content and record what was observed.
+With dependencies installed, `npm run check` performs JavaScript syntax checks and the repository's Node test suite. This is source verification; it does not prove a configured AI service, account, or deployment is healthy. For UI changes, exercise the affected interaction with made-up content and record what was observed.
 
 Keep fork-specific changes and upstream contributions distinguishable. Preserve upstream notices, and update this guide when setup, storage, executor behavior, or repository status changes.

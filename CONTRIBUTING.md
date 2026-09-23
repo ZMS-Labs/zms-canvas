@@ -1,6 +1,6 @@
 # Contributing to ZMS Canvas
 
-ZMS Canvas is a fork of [PenEcho](https://github.com/penecho/penecho). Use this repository for changes to the fork and the upstream project for changes intended for PenEcho. Read the [repository guide](docs/README.md) first. Upstream contribution terms are retained below; check the linked agreement and destination project before submitting changes.
+ZMS Canvas is a fork of [PenEcho](https://github.com/penecho/penecho). Use this repository for changes to the fork, and the PenEcho repository for changes intended for PenEcho. Read the [repository guide](docs/README.md) first, and read [Contribution licensing](#contribution-licensing) before you submit anything.
 
 ## Development Setup
 
@@ -15,7 +15,7 @@ ZMS Canvas is a fork of [PenEcho](https://github.com/penecho/penecho). Use this 
 3. Run `zms-canvas configure` and choose API, Codex CLI, or Claude CLI. Codex and Claude modes require their installed CLI to be authenticated first.
 4. Run `zms-canvas` and open `http://localhost:3888`, or use this computer's LAN IP from another device on the same trusted network.
 
-The default development configuration is the same global `~/.zms-canvas/config.env` used by the installed package. For an isolated test setup, use `zms-canvas configure --config ./local.env` and `zms-canvas --config ./local.env`. Project `.env` files are not loaded automatically.
+The default development configuration is the same global `~/.zms-canvas/config.env` that the `zms-canvas` command uses. For an isolated test setup, use `zms-canvas configure --config ./local.env` and `zms-canvas --config ./local.env`. Project `.env` files are not loaded automatically.
 
 ## Before Submitting Changes
 
@@ -36,13 +36,13 @@ For browser-facing changes, verify desktop and mobile layouts and test stylus/mo
 - Use dependencies only when their licenses explicitly permit commercial use.
 - Keep changes focused and document new data formats or external services.
 
-## Upstream contribution licensing
+## Contribution licensing
 
-PenEcho is offered under `AGPL-3.0-only` and may also be offered under separate commercial terms. To keep both paths possible, every copyrightable contribution is subject to the [PenEcho Contributor License Agreement](CONTRIBUTOR-LICENSE-AGREEMENT.md).
+[CONTRIBUTOR-LICENSE-AGREEMENT.md](CONTRIBUTOR-LICENSE-AGREEMENT.md) is PenEcho's contributor agreement. By its own terms it covers contributions submitted to the canonical PenEcho repository and grants rights to PenEcho's Project Owner, so it applies when you contribute to PenEcho, not when you open a pull request here.
 
-You retain ownership of your contribution. You grant the Project Owner a non-exclusive license to include it in the public AGPL project and in commercially licensed PenEcho editions. Any accepted contribution used in a commercial edition must also remain available in the canonical repository under `AGPL-3.0-only`.
+Under [GitHub's terms of service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service#6-contributions-under-repository-license), when no separate agreement applies, you license a contribution to this repository under the repository's own license, [GNU AGPL v3.0 only](LICENSE).
 
-By opening a pull request and confirming the contributor-agreement checkbox, you accept those terms. Do not submit code owned by an employer or another party unless you have permission to grant these rights.
+Do not submit code owned by an employer or another party unless you have permission to license it under those terms.
 
 ## Pull Requests
 

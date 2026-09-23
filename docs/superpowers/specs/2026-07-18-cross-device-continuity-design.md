@@ -3,7 +3,9 @@
 **Status:** Approved for implementation on 2026-07-18  
 **Product:** ZMS Canvas, a distinct public application based on PenEcho  
 **Repository:** `ZMS-Labs/zms-canvas`  
-**Deployment:** Private ZMS homelab service behind Authentik
+**Deployment:** A private deployment behind a sign-in proxy that sets the notebook owner header
+
+On 2026-09-22, the names of the private deployment's components in this record were replaced with generic descriptions.
 
 ## Objective
 
@@ -19,10 +21,10 @@ This release includes:
 - debounced autosave with an explicit `Saving`, `Saved`, `Offline`, or `Conflict copy` state;
 - immutable, recoverable notebook revisions;
 - optimistic revision checks that prevent silent lost updates;
-- an Authentik-derived owner boundary;
+- an owner boundary taken from the sign-in proxy's identity header;
 - local IndexedDB recovery for work not yet acknowledged by the server;
 - preservation and explicit import of existing device-local snapshots;
-- a persistent SQLite database on the k3s deployment;
+- a persistent SQLite database on the private deployment;
 - a public container image build from this application repository; and
 - a visible link to corresponding source.
 
@@ -30,11 +32,11 @@ This release does not include disconnected editing followed by later multi-devic
 
 ## Repository and Identity Boundary
 
-`ZMS-Labs/penecho-runtime` remains the stable deployment wrapper until ZMS Canvas passes tests and a live workflow exercise. ZMS Canvas owns the modified application source, tests, container definition, and releases. After GitOps is cut over, the wrapper repository is archived rather than maintained as a second source for package and container truth.
+`ZMS-Labs/penecho-runtime` remains the stable deployment wrapper until ZMS Canvas passes tests and a live workflow exercise. ZMS Canvas owns the modified application source, tests, container definition, and releases. After the private deployment switches to the ZMS Canvas image, the wrapper repository is archived rather than maintained as a second source for package and container truth.
 
 ZMS Canvas remains `AGPL-3.0-only`, preserves upstream copyright and attribution, records material modifications, and describes itself factually as based on PenEcho. It uses a distinct name and visual identity because PenEcho's trademark policy does not grant branding rights for modified public builds.
 
-Notebook content, SQLite files, backups, credentials, Authentik configuration, model endpoints, and homelab topology are never committed to the public repository.
+Notebook content, SQLite files, backups, credentials, identity-provider configuration, model endpoints, and private deployment topology are never committed to the public repository.
 
 ## Architecture
 
@@ -55,9 +57,9 @@ The client requires read-your-writes, monotonic reads, and monotonic writes sess
 
 - `PENECHO_NOTEBOOKS_ENABLED=true` enables synchronized notebooks.
 - `PENECHO_NOTEBOOKS_DB=/state/notebooks.sqlite` selects the database path.
-- `PENECHO_NOTEBOOKS_OWNER_HEADER=x-authentik-uid` selects the trusted identity header.
+- `PENECHO_NOTEBOOKS_OWNER_HEADER` selects the trusted identity header, which the sign-in proxy sets.
 - When notebooks are enabled and the trusted header is missing, notebook endpoints return `401`.
-- Notebook endpoints remain under `/api/notebooks`; the deployment permits ingress only from Traefik, and Authentik supplies the trusted header.
+- Notebook endpoints remain under `/api/notebooks`; the deployment accepts traffic only from its sign-in proxy, which supplies the trusted header.
 - The application requires Node.js `>=22.5.0` so it can use the built-in `node:sqlite` module without a native npm addon.
 
 Notebook support is disabled by default for generic local launches so the upstream local-snapshot experience remains usable without an identity proxy or database.
@@ -147,7 +149,7 @@ Existing local snapshots remain visible under `On this device`. The user can cop
 - PNG data is signature-checked, base64-validated, and bounded before storage.
 - Notebook endpoints use `Cache-Control: no-store`.
 - Notebook contents and titles are not written to application logs.
-- The deployment mounts the database volume read-write only into the application pod.
+- The deployment mounts the database volume read-write only into the application container.
 
 ## Failure Handling
 
@@ -159,11 +161,11 @@ Existing local snapshots remain visible under `On this device`. The user can cop
 
 ## Deployment and Cutover
 
-The application repository builds a multi-architecture OCI image for `linux/amd64` and `linux/arm64`, publishes SBOM and provenance attestations, and carries AGPL/source labels. GitOps pins the verified digest, enables notebooks, mounts a dedicated persistent volume at `/state`, and retains the existing Authentik and NetworkPolicy boundary.
+The application repository builds a multi-architecture OCI image for `linux/amd64` and `linux/arm64`, publishes SBOM and provenance attestations, and carries AGPL/source labels. The private deployment pins the verified digest, enables notebooks, mounts a dedicated persistent volume at `/state`, and keeps its existing sign-in proxy and network restrictions.
 
 Cutover requires unit and integration tests, a successful multi-architecture image build, a temporary deployment exercise, an iPad save followed by an iPhone or desktop load, a stale-revision exercise proving neither device is overwritten, and database backup/restore evidence.
 
-Only after those checks does GitOps replace the `penecho-runtime` image digest. The runtime repository is archived after the live deployment remains healthy.
+Only after those checks does the private deployment replace the `penecho-runtime` image digest. The runtime repository is archived after the live deployment remains healthy.
 
 ## Testing Strategy
 

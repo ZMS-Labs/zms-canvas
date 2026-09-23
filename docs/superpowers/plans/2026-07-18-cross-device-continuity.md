@@ -8,12 +8,14 @@
 
 **Tech Stack:** Node.js 22.5+, `node:sqlite`, Node test runner, browser IndexedDB/fetch, OCI/Docker, GitHub Actions.
 
+On 2026-09-22, the names of the private deployment's components in this record were replaced with generic descriptions.
+
 ## Global Constraints
 
 - Product and package identity is `ZMS Canvas`; modified builds must not present themselves as official PenEcho releases.
 - License remains `AGPL-3.0-only`; preserve upstream notices and provide a visible corresponding-source link.
 - Notebook support is disabled by default and enabled with `PENECHO_NOTEBOOKS_ENABLED=true`.
-- The server derives ownership only from `PENECHO_NOTEBOOKS_OWNER_HEADER`, defaulting to `x-authentik-uid`; clients never submit owner IDs.
+- The server derives ownership only from the header named by `PENECHO_NOTEBOOKS_OWNER_HEADER`, which the sign-in proxy sets; clients never submit owner IDs.
 - One SQLite database at `PENECHO_NOTEBOOKS_DB`, defaulting to `<PENECHO_STATE_DIR>/notebooks.sqlite`, is the notebook source of truth.
 - Connected editing only; no CRDT, offline merge, collaboration, Supernote import, or model-profile switching.
 - Retain 50 immutable revisions per notebook; restoring creates a new revision.
@@ -199,6 +201,8 @@ git commit -m "feat: add transactional notebook revision store"
 - [ ] **Step 1: Write failing API tests for missing identity and owner isolation**
 
 ```js
+const ownerHeader = "<owner header>";
+
 test("requires the configured trusted identity header", async () => {
   const response = await request(server, "GET", "/api/notebooks");
   assert.equal(response.status, 401);
@@ -206,7 +210,7 @@ test("requires the configured trusted identity header", async () => {
 
 test("does not disclose another owner's notebook", async () => {
   const created = await createNotebook(server, "owner-a");
-  const response = await request(server, "GET", `/api/notebooks/${created.id}`, null, { "x-authentik-uid":"owner-b" });
+  const response = await request(server, "GET", `/api/notebooks/${created.id}`, null, { [ownerHeader]:"owner-b" });
   assert.equal(response.status, 404);
 });
 ```
@@ -495,7 +499,7 @@ Expected: all commands exit 0.
 
 ```bash
 git push -u origin feat/cross-device-continuity
-gh pr create --repo ZMS-Labs/zms-canvas --base main --head feat/cross-device-continuity --title "feat: add cross-device notebook continuity" --body "Adds server-authoritative SQLite notebooks, connected autosave, immutable revisions, conflict-copy recovery, distinct ZMS Canvas identity, and a multi-architecture AGPL container. Verification and deployment prerequisites are documented in the committed plan. GitOps is intentionally not cut over by this application PR."
+gh pr create --repo ZMS-Labs/zms-canvas --base main --head feat/cross-device-continuity --title "feat: add cross-device notebook continuity" --body "Adds server-authoritative SQLite notebooks, connected autosave, immutable revisions, conflict-copy recovery, distinct ZMS Canvas identity, and a multi-architecture AGPL container. Verification and deployment prerequisites are documented in the committed plan. The private deployment is intentionally not switched over by this application PR."
 ```
 
-The PR body must summarize architecture, tests, AGPL/trademark handling, deployment prerequisites, and the fact that GitOps has not yet been cut over.
+The PR body must summarize architecture, tests, AGPL/trademark handling, deployment prerequisites, and the fact that the private deployment has not yet been switched over.
