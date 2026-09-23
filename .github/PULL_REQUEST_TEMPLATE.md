@@ -6,7 +6,7 @@ Describe what changed and why.
 
 List the checks and browser interactions you performed.
 
-## Contributor agreement
+## Contribution terms
 
-- [ ] I have read and agree to `CONTRIBUTOR-LICENSE-AGREEMENT.md` in this repository.
+- [ ] I have read the "Contribution licensing" section of `CONTRIBUTING.md` and agree that its terms apply to this contribution.
 - [ ] I have the right to submit this contribution, including any required permission from my employer or other rights holder.
