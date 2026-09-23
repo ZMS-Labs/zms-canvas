@@ -1,5 +1,7 @@
 # PenEcho Architecture
 
+These are PenEcho's architecture notes. This fork added the [Synchronized Notebook Continuity](#synchronized-notebook-continuity) section. Parts of the rest still use PenEcho's command and directory names (`penecho`, `~/.penecho`), which are `zms-canvas` and `~/.zms-canvas` in this fork.
+
 ## Overview
 
 PenEcho is a Node.js application with a static browser client, one server-side image encoding dependency, and selectable API, Codex CLI, or Claude CLI model execution.
@@ -28,7 +30,7 @@ Browser canvas
 - Unconfirmed draft interactions and batch confirmation
 - New-canvas workflow with overwrite, save-as-new, and discard choices backed by local snapshots
 - Client-side PNG export cropped to confirmed ink with one tile of surrounding paper margin and bounded downscaling for unusually large regions
-- Persisted Manual/Auto AI mode with a temporary 0–10 second delay control, plus a fixed-width clickable per-request reasoning menu
+- Persisted Manual/Auto AI mode with a temporary 0 to 10 second delay control, plus a fixed-width clickable per-request reasoning menu
 - Freehand-lasso sparse-tile ink selection with local move, proportional resize, recolor, accept, cancel, undo, and redo behavior
 - English-first UI state with Chinese copy isolated in `public/locales/zh.js`
 - IndexedDB snapshot storage
@@ -95,6 +97,8 @@ This keeps list rendering lightweight and avoids loading every full tile blob un
 The current loaded or saved snapshot is tracked for the lifetime of the page so the New action can overwrite it safely. Saving as new creates a distinct snapshot, while every New path cancels active recognition, removes unconfirmed drafts, clears undo/redo state, and recenters the blank canvas.
 
 ## Synchronized Notebook Continuity
+
+This section describes notebook storage added in this fork.
 
 When `/api/config.js` advertises `notebooks.enabled`, `public/app.js` composes the controller in `public/notebooks.js` with the real same-origin HTTP adapter and a separate IndexedDB pending-save recovery store. The server remains authoritative: the history panel labels server notebooks, immutable revisions, and on-device snapshots as distinct sources, and copying a device snapshot creates a synchronized notebook without deleting the local record.
 
